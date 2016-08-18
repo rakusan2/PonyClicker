@@ -1,58 +1,104 @@
-var ponyclicker = (function(){
-  "use strict"
-  // Polyfill for old browsers and IE
-  // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/log10
-  Math.log10 = Math.log10 || function(x) {
-    return Math.log(x) / Math.LN10;
-  };
+interface Math{
+  /** Returns the base 10 logarithm of a number */
+  log10(x:number):number
+}
+const enum displayNum{
+  names=0,
+  rawNumbers=1,
+  scientificNotation=2
+}
+const enum displayWheel{
+  entire=0,
+  expanded=1,
+  pony=2
+}
+var disable_ponyclicker;
 
-  var $ponyversion = {major:1,minor:0,revision:7};
-      
-  function CreateGame() {
-    return {
-      upgrades:[], // list of upgrade IDs that are owned
-      upgradeHash:{},
-      smiles:0,
-      totalsmiles:0,
-      SPC:1,
-      SPS:0,
-      shiftDown:false,
-      totalTime:0,
-      clicks:0,
-      achievements:{}, // List of achievements as an object that we pretend is a hash.
-      achievementcount:0, // We can't efficiently count properties so we store a length ourselves.
-      muffins:0, // total number of muffins gained from achievements.
-      store:[1,0,0,0,0,0,0,0,0,0,0,0,0], // amount player has bought of each store item.
-      ponyList:genPonyList(), // precalculated list of randomized ponies (so we can reconstruct them after a save/load)
-      pinkies:[], // list of smiles siphoned by rampaging pinkies
-      clonespopped:0, // number of pinkie clones popped
-      cupcakes:0, // total number of cupcakes gained through soft resets
-      resets:0, // number of times the game has been reset
-      legacysmiles:0, // total number of smiles from previous resets
-      legacyclicks:0,
-      version:6, // incremented every time this object format changes so we know to deal with it.
-      settings: {
-        useCanvas:true,
-        optimizeFocus:false,
-        closingWarn:false,
-        showHighlight:false,
-        numDisplay:0, // 0 is names, 1 is raw numbers, 2 is scientific notation
-        wheelDisplay:1, // 0 is the entire wheel, 1 is the expanded wheel, 2 is the pony wheel.
-      }
-    };
+let ponyclicker = (function(){
+  "use strict"
+  // Polyfill for old browsers and any that does not support MathML
+  // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/log10
+  Math.log10 = Math.log10 || ((x:number)=>(Math.log(x) / Math.LN10));
+
+  let $ponyversion = {major:1,minor:0,revision:7};
+
+  // The game's difficulty is modelled using a series of curves defined by these values
+  /** Friendship curve */
+  const fcurve = 1.24;
+  const fcurve_init = 20;
+  /** cost ratio curve */
+  const rcurve = 1.31;
+  /** Initial cost ratio (jump forwards twice to get the cost ratio for a recital) */
+  const rcurve_init = 15;
+  const ccurve = 1.22;
+  /** The fundamental curve is the cost of friendships. This forms a simple recurrence relation f_n = a*f_n-1, which has a closed-form solution of f_n = f_0*a^n */
+  let fn_cost1 = fn_ratio(fcurve_init, fcurve);
+  /** The cost of ponies is based on the cost of buying k+1 friendships, where k is the number of edges in a complete graph of n-nodes, which is just a triangular number. So, we take the current number of ponies, find the corresponding triangular number, add one and plug that into the friendship cost function.*/
+  let fn_cost0 = (n:number) => (n<2)?15:fn_cost1(triangular(n)+1);
+  let Fvals = [0,0,4,12,30,40,50,60,75,80,95,120];
+  let fn_rratio = fn_ratio(rcurve_init,rcurve); // gets the SPS ratio for a store of level n
+
+  class CreateGame {
+    delta:number
+    /** list of upgrade IDs that are owned */
+    upgrades=[]
+    upgradeHash={}
+    smiles=0
+    totalsmiles=0
+    SPC=1
+    SPS=0
+    shiftDown=false
+    totalTime=0
+    clicks=0
+    /** List of achievements as an object that we pretend is a hash. */
+    achievements={}
+    /** We can't efficiently count properties so we store a length ourselves. */
+    achievementcount=0
+    /** total number of muffins gained from achievements. */
+    muffins=0
+    /** amount player has bought of each store item. */
+    store=[1,0,0,0,0,0,0,0,0,0,0,0,0]
+    /** precalculated list of randomized ponies (so we can reconstruct them after a save/load) */
+    ponyList=genPonyList()
+    /** list of smiles siphoned by rampaging pinkies */
+    pinkies=[]
+    /** number of pinkie clones popped */
+    clonespopped=0
+    /** total number of cupcakes gained through soft resets */
+    cupcakes=0
+    /** number of times the game has been reset */
+    resets=0
+    /** total number of smiles from previous resets */
+    legacysmiles=0
+    legacyclicks=0
+    /** incremented every time this object format changes so we know to deal with it. */
+    version=6
+    settings= {
+      useCanvas:true,
+      optimizeFocus:false,
+      closingWarn:false,
+      showHighlight:false,
+      /** 0 is names, 1 is raw numbers, 2 is scientific notation */
+      numDisplay:displayNum.names,
+      /** 0 is the entire wheel, 1 is the expanded wheel, 2 is the pony wheel. */
+      wheelDisplay:displayWheel.expanded,
+    }
   }
   
+  interface JQueryCanvas extends JQuery{
+    doneLoading:boolean
+  }
   // JSON cannot encode Infinity or NaN, so it simply writes it as "null". Luckily, we only encounter this
   // when a player reaches Infinity, so we can assume all nulls in numeric variables were infinities.
   function ReplaceInfinity(x) {
     return (x === null) ? Number.POSITIVE_INFINITY : x;
   }
   function ParseGame(src) {
-    var g = JSON.parse(src);
+    let g = JSON.parse(src);
     switch(g.version)
     {
       case 3:
-        g.settings.numDisplay = 0;
+        g.settings.numDisplay = displayNum.names;
         g.version = 4;
       case 4:
         delete g.achievement_muffins;
@@ -65,7 +111,7 @@ var ponyclicker = (function(){
         g.legacyclicks = 0;
         g.version = 5;
       case 5:
-        g.settings.wheelDisplay = 1;
+        g.settings.wheelDisplay = displayWheel.expanded;
         g.version = 6;
       case 6:
         Game = g;
@@ -84,13 +130,13 @@ var ponyclicker = (function(){
   //
   // -------------------------------- Pony list generation --------------------------------
   //
-  var PonyList = ["Pinkie Pie", "Adagio Dazzle", "Aloe", "Amethyst Star", "Applebloom", "Applejack", "Aria Blaze", "Babs Seed", "Berry Punch", "Big McIntosh", "Blossomforth", "Braeburn", "Carrot Top", "Cheerilee", "Cheese Sandwich", "Chrysalis", "Cloudchaser", "Coco Pommel", "Colgate", "Daring Do", "Diamond Tiara", "Dinky Doo", "Ditsy Doo", "Dr Whooves", "Fancy Pants", "Flam", "Fleur de Lis", "Flim", "Flitter", "Fluttershy", "Hoity Toity", "King Sombra", "Lightning Dust", "Lotus", "Lyra Heartstrings", "Maud Pie", "Mrs Harshwhinny", "Night Glider", "Octavia Melody", "Prince Blueblood", "Princess Cadance", "Princess Celestia", "Princess Luna", "Rainbow Dash", "Rarity", "Scootaloo", "Shining Armor", "Silver Spoon", "Sonata Dusk", "Starlight Glimmer", "Sunset Shimmer", "Sweetie Belle", "Thunderlane", "Trenderhoof", "Trixie", "Trouble Shoes", "Twilight Sparkle", "Zecora", "Vinyl Scratch"];
+  let PonyList = ["Pinkie Pie", "Adagio Dazzle", "Aloe", "Amethyst Star", "Applebloom", "Applejack", "Aria Blaze", "Babs Seed", "Berry Punch", "Big McIntosh", "Blossomforth", "Braeburn", "Carrot Top", "Cheerilee", "Cheese Sandwich", "Chrysalis", "Cloudchaser", "Coco Pommel", "Colgate", "Daring Do", "Diamond Tiara", "Dinky Doo", "Ditsy Doo", "Dr Whooves", "Fancy Pants", "Flam", "Fleur de Lis", "Flim", "Flitter", "Fluttershy", "Hoity Toity", "King Sombra", "Lightning Dust", "Lotus", "Lyra Heartstrings", "Maud Pie", "Mrs Harshwhinny", "Night Glider", "Octavia Melody", "Prince Blueblood", "Princess Cadance", "Princess Celestia", "Princess Luna", "Rainbow Dash", "Rarity", "Scootaloo", "Shining Armor", "Silver Spoon", "Sonata Dusk", "Starlight Glimmer", "Sunset Shimmer", "Sweetie Belle", "Thunderlane", "Trenderhoof", "Trixie", "Trouble Shoes", "Twilight Sparkle", "Zecora", "Vinyl Scratch"];
   
-  var ElementList = ["element_of_loyalty", "element_of_honesty", "element_of_kindness", "element_of_laughter", "element_of_generosity", "element_of_magic", "element_of_melody", "element_of_muffins", "element_of_music", "element_of_sweets", "element_of_time", "element_of_wubs", "element_of_upvote", "element_of_downvote"];
+  let ElementList = ["element_of_loyalty", "element_of_honesty", "element_of_kindness", "element_of_laughter", "element_of_generosity", "element_of_magic", "element_of_melody", "element_of_muffins", "element_of_music", "element_of_sweets", "element_of_time", "element_of_wubs", "element_of_upvote", "element_of_downvote"];
   
   // https://stackoverflow.com/a/2450976/1344955
   function shuffle(array) {
-    var currentIndex = array.length, temporaryValue, randomIndex;
+    let currentIndex = array.length, temporaryValue, randomIndex;
     while (0 !== currentIndex) {
       randomIndex = Math.floor(Math.random() * currentIndex);
       currentIndex -= 1;
@@ -102,8 +148,8 @@ var ponyclicker = (function(){
   }
   
   function genPonyList() {
-    var list = [];
-    for(var i = 1; i < PonyList.length; ++i) {
+    let list = [];
+    for(let i = 1; i < PonyList.length; ++i) {
       list.push(i);
     }
     shuffle(list);
@@ -114,45 +160,183 @@ var ponyclicker = (function(){
   //
   // -------------------------------- Store definitions --------------------------------
   //
-  var Store = [
-    {cost:function(n) {},name:"Pony", plural: "ponies", desc: "This is a pony. Ponies need friendships to generate smiles.", img: function(n){ return 'ponies/'+PonyList[(n>=Game.ponyList.length?0:Game.ponyList[n])]+'.svg'; }},
-    {cost:function(n) {},name:"Friendship", plural: "friendships", desc: "A friendship between two ponies. You can't buy a friendship if everypony is friends with everypony else!", img: function(n){ return 'store/hoofbump.svg'; } },
-    {cost:function(n) {},name:"Recital", plural: "recitals", desc: "A small recital for everypony you know.", formula: "Generates one smile per pony.<i>SPS = P</i>", img: function(n){ return 'store/cello.svg'; }}, // P
-    {cost:function(n) {},name:"Party", plural: "parties", desc: "Throw a party for all your friends!", formula: "Generates one smile per friendship.<i>SPS = F</i>", img: function(n){ return 'store/balloon.svg'; }}, // F
-    {cost:function(n) {},name:"Parade", plural: "parades", desc: "Throw a big parade for everypony and all their friends!", formula: "Generates one smile for each friendship and each pony.<i>SPS = P&plus;F</i>", img: function(n){ return 'store/trixie_wagon.svg'; }}, // P+F
-    {cost:function(n) {},name:"Concert", plural: "concerts", desc: "Throw a concert for the whole town!", formula: "Generates one smile for every pony, friendship, recital, party, and parade you have.<i>SPS = P&plus;F&plus;Recitals&plus;Parties&plus;Parades</i>", img: function(n){ return 'store/octavia_cutiemark.svg'; }}, // P+F+Recitals+Parties+Parades
-    {cost:function(n) {},name:"Festival", plural: "festivals", desc: "Celebrate a festival for a whole weekend!", formula: "Generates one smile for every pony you have, times the number of friendships you have.<i>SPS = P&times;F</i>", img: function(n){ return 'store/stage.png'; }}, // P*F
-    {cost:function(n) {},name:"Rave", plural: "raves", desc: "Throw a gigantic rave party in Canterlot!", formula: "Generates one smile for every pony, times the number of friendships, times the number of concerts.<i>SPS = P&times;F&times;Concerts</i>", img: function(n){ return 'store/turntable.png'; }}, // P*F*Concerts
-    {cost:function(n) {},name:"Grand Galloping Gala", plural: "grand galloping galas", desc: "Celebrate the Grand Galloping Gala with ponies from all over Equestria!", formula: "Generates one smile for every pony you have, times the number of friendships you have, times the number of parties and parades you have.<i>SPS = P&times;F&times;(Parties&plus;Parades)</i>", img: function(n){ return 'store/redhat.svg'; }}, //P*F*(Parties + Parades)
-    {cost:function(n) {},name:"Coronation", plural: "coronations", desc: "Make some random pony a princess so you have an excuse to party all night!", formula: "Generates one smile per pony, times your friendships, times your concerts, times your raves.<i>SPS = P&times;F&times;Concerts&times;Raves</i>", img: function(n){ return 'store/twilicorn_crown.svg'; }}, //P*F*Concerts*Raves
-    {cost:function(n) {},name:"National Holiday", plural: "national holidays", desc: "Declare a national holiday so everypony in equestria can party with you instead of being productive!", formula: "Generates one smile per pony, times your friendships, times your parades, times your festivals, times your coronations.<i>SPS = P&times;F&times;Parades&times;Festivals&times;Coronations</i>", img: function(n){ return 'store/calendar.svg'; }}, //P*F*Parades*Festivals*Coronations
-    {cost:function(n) {},name:"Elements Of Harmony", plural: "Elements of Harmony", desc: "Use a giant rainbow friendship beam to solve all your problems!", formula: "Generates one smile per pony, times the number of friendships you have, times an exponential function of the fourth root of your friendships times the number of buildings you have.<i>SPS = P&times;F&times;exp((F*B)<sup>&frac14</sup>)</i>", img: function(n){ return 'store/'+ElementList[n%ElementList.length]+'.svg'; }}, //P*F*exp((F*B)^1/4)
-  ];
+  interface StoreItemI{
+    cost?:(n:number)=>number,
+    costcurve?:number,
+    initcost?:number,
+    name:string,
+    plural:string,
+    desc:string,
+    formula?:string
+    img:(n:number)=>string,
+    fn_SPS:(store:number[])=>number
+    SPS_cache?:number
+  }
+  interface StoreItem extends StoreItemI{}
+  class StoreItem{
+    constructor(sItem:StoreItemI, id:number){
+      if(sItem.cost !== undefined)this.cost = sItem.cost;
+      if(sItem.formula !== undefined)this.formula = sItem.formula;
+      this.name = sItem.name;
+      this.plural = sItem.plural;
+      this.desc = sItem.desc;
+      this.img = sItem.img;
+      this.fn_SPS = sItem.fn_SPS;
+      if(sItem.initcost !== undefined) this.initcost = sItem.initcost;
+      if(sItem.costcurve !== undefined) this.costcurve = sItem.costcurve;
+    }
+    cost(n:number){
+      return this.initcost*Math.pow(this.costcurve,n)*(1+poisson(n+3,14)*5);
+    }
+  }
 
-  function factorial(n) { var r = n; while(--n > 1) { r = r*n; } return r; }
-  function factorial_limit(n,k) { var r = n; while(--n > k) { r = r*n; } return r; }
-  function max_binomial(n) { var n2=Math.floor(n/2); var r = n; while(--n > n2) { r = r*n; } return Math.floor(r/factorial(n2)); }
-  function triangular(n) { return (n*(n-1))/2; } // number of edges in a complete graph of n nodes
-  function inv_triangular(n) { return 0.5*(Math.sqrt(8*n + 1) + 1); } // Returns the triangular number that would produce this many edges
-  function fbnext(x) { return x + 1 + (x>>1) + (x>>3) - (x>>7) + (x>>10) - (x>>13); }
+  function generateStore(items:StoreItemI[]){
+    function inv_cost(i:number, cost:number) { return Math.floor(Math.log(cost/items[i].initcost)/Math.log(items[i].costcurve)) }
+    function get_rratio(n) {
+      switch(n) {
+        case 10: return 2.0*fn_rratio(n);
+        case 11: return 3.5*fn_rratio(n);
+      }
+      return fn_rratio(n);
+    }
+    function initSPS(item:StoreItemI, store:number[]) { return item.fn_SPS(store); }
+    function initcost(i:number, store:number[]) { return initSPS(items[i], store)*get_rratio(i); }
+    function estimatestore(f:number, max:number) { 
+      let s = [Math.floor(inv_triangular(f)),f];
+      for(let j = 2; j < max; j++)
+        s.push(inv_cost(j, fn_cost1(f)));
+      return s;
+    }
+    let Store :StoreItem[]= [];
+    for (let i = 0, item:StoreItemI; i < items.length; i++) {
+      item = items[i];
+      if(i>=2) {
+        item.initcost = initcost(i,estimatestore(Fvals[i], i));
+        item.costcurve = ccurve
+      }
+      Store[i]=new StoreItem(item,i);
+      
+    }
+    return Store;
+  }
+  let Store :StoreItem[] = generateStore([
+    {
+      cost:fn_cost0,
+      name:"Pony", 
+      plural: "ponies", 
+      desc: "This is a pony. Ponies need friendships to generate smiles.", 
+      img: (n)=>'ponies/'+PonyList[(n>=Game.ponyList.length?0:Game.ponyList[n])]+'.svg',
+      fn_SPS : (store) => 0
+    },
+    {
+      cost:fn_cost1,
+      costcurve : fcurve,
+      initcost : fcurve_init,
+      name:"Friendship", 
+      plural: "friendships",
+      desc: "A friendship between two ponies. You can't buy a friendship if everypony is friends with everypony else!", 
+      img: (n) => 'store/hoofbump.svg',
+      fn_SPS : (store) => 1.0
+    },
+    {
+      name:"Recital", 
+      plural: "recitals", 
+      desc: "A small recital for everypony you know.", 
+      formula: "Generates one smile per pony.<i>SPS = P</i>", 
+      img: (n) => 'store/cello.svg',
+      fn_SPS : (store) => store[0]
+    }, // P
+    {
+      name:"Party", 
+      plural: "parties", 
+      desc: "Throw a party for all your friends!", 
+      formula: "Generates one smile per friendship.<i>SPS = F</i>", 
+      img: (n) => 'store/balloon.svg',
+      fn_SPS : (store) => store[1]
+    }, // F
+    {
+      name:"Parade", 
+      plural: "parades", 
+      desc: "Throw a big parade for everypony and all their friends!", 
+      formula: "Generates one smile for each friendship and each pony.<i>SPS = P&plus;F</i>", 
+      img: (n) => 'store/trixie_wagon.svg',
+      fn_SPS : (store) => store[0]+store[1]
+    }, // P+F
+    {
+      name:"Concert", plural: "concerts", 
+      desc: "Throw a concert for the whole town!", 
+      formula: "Generates one smile for every pony, friendship, recital, party, and parade you have.<i>SPS = P&plus;F&plus;Recitals&plus;Parties&plus;Parades</i>", 
+      img: (n) => 'store/octavia_cutiemark.svg',
+      fn_SPS : (store) => store[0]+store[1]+store[2]+store[3]+store[4]
+    }, // P+F+Recitals+Parties+Parades
+    {
+      name:"Festival", 
+      plural: "festivals", 
+      desc: "Celebrate a festival for a whole weekend!", 
+      formula: "Generates one smile for every pony you have, times the number of friendships you have.<i>SPS = P&times;F</i>", 
+      img: (n) => 'store/stage.png',
+      fn_SPS : (store) => store[0]*store[1]
+    }, // P*F
+    {
+      name:"Rave", 
+      plural: "raves", 
+      desc: "Throw a gigantic rave party in Canterlot!", 
+      formula: "Generates one smile for every pony, times the number of friendships, times the number of concerts.<i>SPS = P&times;F&times;Concerts</i>", 
+      img: (n) => 'store/turntable.png',
+      fn_SPS : (store) => store[0]*store[1]*store[5]
+    }, // P*F*Concerts
+    {
+      name:"Grand Galloping Gala", 
+      plural: "grand galloping galas", 
+      desc: "Celebrate the Grand Galloping Gala with ponies from all over Equestria!", 
+      formula: "Generates one smile for every pony you have, times the number of friendships you have, times the number of parties and parades you have.<i>SPS = P&times;F&times;(Parties&plus;Parades)</i>", 
+      img: (n) => 'store/redhat.svg',
+      fn_SPS : (store) => store[0]*store[1]*(store[3]+store[4])
+    }, //P*F*(Parties + Parades)
+    {
+      name:"Coronation", 
+      plural: "coronations", 
+      desc: "Make some random pony a princess so you have an excuse to party all night!", 
+      formula: "Generates one smile per pony, times your friendships, times your concerts, times your raves.<i>SPS = P&times;F&times;Concerts&times;Raves</i>", 
+      img: (n) => 'store/twilicorn_crown.svg',
+      fn_SPS : (store) => store[0]*store[1]*store[5]*store[7]
+    }, //P*F*Concerts*Raves
+    {
+      name:"National Holiday", 
+      plural: "national holidays",
+      desc: "Declare a national holiday so everypony in equestria can party with you instead of being productive!", 
+      formula: "Generates one smile per pony, times your friendships, times your parades, times your festivals, times your coronations.<i>SPS = P&times;F&times;Parades&times;Festivals&times;Coronations</i>", 
+      img: (n) => 'store/calendar.svg',
+      fn_SPS : (store) => store[0]*store[1]*store[4]*store[6]*store[9]
+    }, //P*F*Parades*Festivals*Coronations
+    {
+      name:"Elements Of Harmony", 
+      plural: "Elements of Harmony", 
+      desc: "Use a giant rainbow friendship beam to solve all your problems!", 
+      formula: "Generates one smile per pony, times the number of friendships you have, times an exponential function of the fourth root of your friendships times the number of buildings you have.<i>SPS = P&times;F&times;exp((F*B)<sup>&frac14</sup>)</i>", 
+      img: (n) => 'store/'+ElementList[n % ElementList.length]+'.svg',
+      fn_SPS : (store) => store[0]*store[1]*Math.exp(Math.pow(countb(store)*store[1], 1/4))
+    } //P*F*exp((F*B)^1/4)
+  ]);
+
+  function factorial(n:number) { let r = n; while(--n > 1) { r = r*n; } return r; }
+  function factorial_limit(n:number,k:number) { let r = n; while(--n > k) { r = r*n; } return r; }
+  function max_binomial(n:number) { let n2=Math.floor(n/2); let r = n; while(--n > n2) { r = r*n; } return Math.floor(r/factorial(n2)); }
+  function triangular(n:number) { return (n*(n-1))/2; } // number of edges in a complete graph of n nodes
+  function inv_triangular(n:number) { return 0.5*(Math.sqrt(8*n + 1) + 1); } // Returns the triangular number that would produce this many edges
+  function fbnext(x:number) { return x + 1 + (x>>1) + (x>>3) - (x>>7) + (x>>10) - (x>>13); }
   
-  // The game's difficulty is modelled using a series of curves defined by these values
-  function fn_ratio(init,curve) { return function(n) { return init*Math.pow(curve,n); }; }
-  var fcurve = 1.24; // Friendship curve
-  var fcurve_init = 20;
-  var rcurve = 1.31; // cost ratio curve
-  var rcurve_init = 15; // Initial cost ratio (jump forwards twice to get the cost ratio for a recital)
-  var ccurve = 1.22;
+  function fn_ratio(init:number,curve:number) { return (n:number) => init*Math.pow(curve,n); }
   
-  // The fundamental curve is the cost of friendships. This forms a simple recurrence relation f_n = a*f_n-1, which has a closed-form solution of f_n = f_0*a^n
-  var fn_cost1 = fn_ratio(fcurve_init, fcurve);
-  Store[1].initcost = fcurve_init;
-  Store[1].costcurve = fcurve;
+  //* The fundamental curve is the cost of friendships. This forms a simple recurrence relation f_n = a*f_n-1, which has a closed-form solution of f_n = f_0*a^n */
+  //let fn_cost1 = fn_ratio(fcurve_init, fcurve);
+  //Store[1].initcost = fcurve_init;
+  //Store[1].costcurve = fcurve;
 
   // The cost of ponies is based on the cost of buying k+1 friendships, where k is the number of edges in a complete graph of n-nodes, which is just a triangular number. So, we take the current number of ponies, find the corresponding triangular number, add one and plug that into the friendship cost function.
-  var fn_cost0 = function(n) { return (n<2)?15:fn_cost1(triangular(n)+1); };
-  function countb(store) { var r=0; for(var i = 2; i < store.length; ++i) r+=store[i]; return r; }
-  
+  //let fn_cost0 = (n) => (n<2)?15:fn_cost1(triangular(n)+1);
+  function countb(store) { let r=0; for(let i = 2; i < store.length; ++i) r+=store[i]; return r; }
+  /*
   Store[0].fn_SPS = function(store) { return 0; };
   Store[1].fn_SPS = function(store) { return 1.0; };
   Store[2].fn_SPS = function(store) { return store[0]; };
@@ -165,11 +349,12 @@ var ponyclicker = (function(){
   Store[9].fn_SPS = function(store) { return store[0]*store[1]*store[5]*store[7]; };
   Store[10].fn_SPS = function(store) { return store[0]*store[1]*store[4]*store[6]*store[9]; };
   Store[11].fn_SPS = function(store) { return store[0]*store[1]*Math.exp(Math.pow(countb(store)*store[1], 1/4)); };
-
+  */
+  /*
   function inv_cost(i, cost) { return Math.floor(Math.log(cost/Store[i].initcost)/Math.log(Store[i].costcurve)) }
 
-  var Fvals = [0,0,4,12,30,40,50,60,75,80,95,120];
-  var fn_rratio = fn_ratio(rcurve_init,rcurve); // gets the SPS ratio for a store of level n
+  //let Fvals = [0,0,4,12,30,40,50,60,75,80,95,120];
+  //let fn_rratio = fn_ratio(rcurve_init,rcurve); // gets the SPS ratio for a store of level n
   function get_rratio(n) {
     switch(n) {
       case 10: return 2.0*fn_rratio(n);
@@ -180,55 +365,59 @@ var ponyclicker = (function(){
   function initSPS(i, store) { return Store[i].fn_SPS(store); }
   function initcost(i, store) { return initSPS(i, store)*get_rratio(i); }
   function estimatestore(f, max) { 
-    var s = [Math.floor(inv_triangular(f)),f];
-    for(var j = 2; j < max; j++)
+    let s = [Math.floor(inv_triangular(f)),f];
+    for(let j = 2; j < max; j++)
       s.push(inv_cost(j, fn_cost1(f)));
     return s;
   }
-  for(var i = 2; i < 12; ++i) {
+  */
+  /*
+  for(let i = 2; i < 12; ++i) {
     Store[i].initcost = initcost(i, estimatestore(Fvals[i], i));
     Store[i].costcurve = ccurve; //fn_costcurve(5, fn_rratio(i-2)*1.5, i, Store[i].initcost);
   }
+  */
   // Calculates a poisson distribution, which is useful for countering the SPS/cost ratio dip at the beginning of the cost function. Beyond n > 40 the function begins returning values on the order of 0.00000000001, so we just set it to 0 to prevent underflow errors.
   function poisson(n,L) { return n>40?0:Math.pow(L,n)*Math.exp(-L)/factorial(n); }
-  function default_cost(i, n) { return Store[i].initcost*Math.pow(Store[i].costcurve,n)*(1+poisson(n+3,14)*5); }
-
+  /*
+  function fn_default_cost(i) { return (n) => Store[i].initcost*Math.pow(Store[i].costcurve,n)*(1+poisson(n+3,14)*5); }
+  
   Store[0].cost = fn_cost0;
   Store[1].cost = fn_cost1;
-  Store[2].cost = function(n) { return default_cost(2, n); };
-  Store[3].cost = function(n) { return default_cost(3, n); };
-  Store[4].cost = function(n) { return default_cost(4, n); };
-  Store[5].cost = function(n) { return default_cost(5, n); };
-  Store[6].cost = function(n) { return default_cost(6, n); };
-  Store[7].cost = function(n) { return default_cost(7, n); };
-  Store[8].cost = function(n) { return default_cost(8, n); };
-  Store[9].cost = function(n) { return default_cost(9, n); };
-  Store[10].cost = function(n) { return default_cost(10, n); };
-  Store[11].cost = function(n) { return default_cost(11, n); };
-  
+  Store[2].cost = fn_default_cost(2);
+  Store[3].cost = fn_default_cost(3);
+  Store[4].cost = fn_default_cost(4);
+  Store[5].cost = fn_default_cost(5);
+  Store[6].cost = fn_default_cost(6);
+  Store[7].cost = fn_default_cost(7);
+  Store[8].cost = fn_default_cost(8);
+  Store[9].cost = fn_default_cost(9);
+  Store[10].cost = fn_default_cost(10);
+  Store[11].cost = fn_default_cost(11);
+  */
   //
   // -------------------------------- Game Loading and Settings --------------------------------
   //
   function predictcupcakes() {
-    return Math.floor(Math.pow(inv_triangular((Game.legacysmiles + Game.totalsmiles)/1000000000000000000), 0.618)) - Game.cupcakes;
+    return Math.floor(Math.pow(inv_triangular((Game.legacysmiles + Game.totalsmiles)/1e18), 0.618)) - Game.cupcakes;
   }
   function ResetGame() {
-    for(var i = 0; i < Game.pinkies.length; ++i) {
+    for(let i = 0; i < Game.pinkies.length; ++i) {
       if(Game.pinkies[i]>=0) Earn(Game.pinkies[i]);
     }
-    if(Game.totalsmiles > 1000000000) EarnAchievement(212);
-    if(Game.totalsmiles > 1000000000000) EarnAchievement(213);
-    if(Game.totalsmiles > 1000000000000000) EarnAchievement(214);
-    if(Game.totalsmiles > 1000000000000000000) EarnAchievement(215);
-    if(Game.totalsmiles > 1000000000000000000000) EarnAchievement(216);
-    if(Game.totalsmiles > 1000000000000000000000000) EarnAchievement(217);
-    if(Game.totalsmiles > 1000000000000000000000000000) EarnAchievement(218);
-    if(Game.totalsmiles > 1000000000000000000000000000000) EarnAchievement(219);
+    if(Game.totalsmiles > 1e9) EarnAchievement(212);
+    if(Game.totalsmiles > 1e12) EarnAchievement(213);
+    if(Game.totalsmiles > 1e15) EarnAchievement(214);
+    if(Game.totalsmiles > 1e18) EarnAchievement(215);
+    if(Game.totalsmiles > 1e21) EarnAchievement(216);
+    if(Game.totalsmiles > 1e24) EarnAchievement(217);
+    if(Game.totalsmiles > 1e27) EarnAchievement(218);
+    if(Game.totalsmiles > 1e30) EarnAchievement(219);
     
     Game.legacysmiles += Game.totalsmiles;
     Game.legacyclicks += Game.clicks;
-    var diff = Game.cupcakes;
-    Game.cupcakes = Math.floor(Math.pow(inv_triangular(Game.legacysmiles/1000000000000000000), 0.618));
+    let diff = Game.cupcakes;
+    Game.cupcakes = Math.floor(Math.pow(inv_triangular(Game.legacysmiles/1e18), 0.618));
     diff = Game.cupcakes - diff;
     ShowNotice("Game reset", ((diff==0)?null:"You get <b>" + Pluralize(diff, " cupcake") + "</b> for your <b>" + Pluralize(Game.totalsmiles, " smile") + "</b>"), null);
     Game.resets += 1;
@@ -246,7 +435,7 @@ var ponyclicker = (function(){
     SaveGame();
     InitializeGame();
   }
-  function WipeAllData() { localStorage.removeItem('game'); Game = CreateGame(); InitializeGame(); }
+  function WipeAllData() { localStorage.removeItem('game'); Game = new CreateGame(); InitializeGame(); }
   function ImportGame(src) {
     src = src.replace(/[\u0022\u201C\u201D]/g, "\"");
     ParseGame(src);
@@ -265,13 +454,13 @@ var ponyclicker = (function(){
     updateUpgradesAchievements();
     $stat_clicks.html(PrettyNum(Game.clicks));
     $stat_legacyclicks.html(PrettyNum(Game.legacyclicks + Game.clicks));
-    $stat_resets.html(Game.resets);
+    $stat_resets.html(Game.resets.toString());
     $stat_cupcakes.html(PrettyNum(Game.cupcakes));
     ShowLegacyStats();
     CheckAchievements(Object.keys(achievementList));
     if(Game.clonespopped>0) 
       $statclonespopped[0].style.display = 'block';
-    $stat_clonespopped.html(Game.clonespopped);
+    $stat_clonespopped.html(Game.clonespopped.toString());
     UpdateSPS();
     ResetApocalypse();
     CheckApocalypse();
@@ -296,17 +485,17 @@ var ponyclicker = (function(){
     Game.settings.optimizeFocus = $EnableF.prop('checked');
     Game.settings.closingWarn = $EnableW.prop('checked');
     Game.settings.showHighlight = $EnableH.prop('checked');
-    if($('#numdisplay0').prop('checked')) Game.settings.numDisplay = 0;
-    if($('#numdisplay1').prop('checked')) Game.settings.numDisplay = 1;
-    if($('#numdisplay2').prop('checked')) Game.settings.numDisplay = 2;
-    if($('#wheeldisplay0').prop('checked')) Game.settings.wheelDisplay = 0;
-    if($('#wheeldisplay1').prop('checked')) Game.settings.wheelDisplay = 1;
-    if($('#wheeldisplay2').prop('checked')) Game.settings.wheelDisplay = 2;
+    if($('#numdisplay0').prop('checked')) Game.settings.numDisplay = displayNum.names;
+    if($('#numdisplay1').prop('checked')) Game.settings.numDisplay = displayNum.rawNumbers;
+    if($('#numdisplay2').prop('checked')) Game.settings.numDisplay = displayNum.scientificNotation;
+    if($('#wheeldisplay0').prop('checked')) Game.settings.wheelDisplay = displayWheel.entire;
+    if($('#wheeldisplay1').prop('checked')) Game.settings.wheelDisplay = displayWheel.expanded;
+    if($('#wheeldisplay2').prop('checked')) Game.settings.wheelDisplay = displayWheel.pony;
     UpdateSPS();
     OrganizePonies();
   }
   function ShowLegacyStats() {
-    var pclicks = $('#statlegacyclicks')[0],
+    let pclicks = $('#statlegacyclicks')[0],
         psmiles = $('#statlegacysmiles')[0],
         presets = $('#statresets')[0],
         pcupcakes = $('#statcupcakes')[0];
@@ -324,7 +513,7 @@ var ponyclicker = (function(){
   // -------------------------------- News Headlines and Functions --------------------------------
   //
   function GetNews() {
-    var news = [];
+    let news = [];
 
     // These are specific smile count related messages
     if(Game.totalsmiles < 30) {
@@ -419,12 +608,12 @@ var ponyclicker = (function(){
 
     return news[GetRandNum(0, news.length)];
   }
-  var newsnum = 0,
+  let newsnum = 0,
       newswait = 15000,
       lastNews;
 
   function UpdateNews() {
-    var n2 = (newsnum + 1) % 2;
+    let n2 = (newsnum + 1) % 2;
     $news.children()
       .last().prependTo($news).css('opacity',0).html(GetNews()).fadeTo(500,1)
       .next().fadeTo(500,0);
@@ -435,21 +624,21 @@ var ponyclicker = (function(){
   //
   function NumCommas(x) {
     if(x<1e20) { // if we're below the precision threshold of toFixed, we cheat and insert commas into that.
-      var n = x.toFixed(0);
-      var len = n.length%3;
+      let n = x.toFixed(0);
+      let len = n.length%3;
       if(!len) len = 3;
-      var r = n.substring(0, len);
-      for(var i = len; i < n.length; i+=3) {
+      let r = n.substring(0, len);
+      for(let i = len; i < n.length; i+=3) {
         r += ',' + n.substring(i, i+3);
       }
       return r;
     }
     // TODO: This is laughably inefficient because we build the arrays in reverse.
-    var r = (Math.floor(x)%1000).toFixed(0);
+    let r = (Math.floor(x)%1000).toFixed(0);
     x = Math.floor(x/1000);
     while(x) {
-      var len = r.split(',')[0].length;
-      for(var i = len; i < 3; ++i) {
+      let len = r.split(',')[0].length;
+      for(let i = len; i < 3; ++i) {
         r = '0' + r;
       }
       r = (x%1000).toFixed(0) + ',' + r;
@@ -458,7 +647,7 @@ var ponyclicker = (function(){
     return r;
   }
   
-  var number_names = [
+  let number_names = [
   "million",
   "billion",
   "trillion",
@@ -470,7 +659,7 @@ var ponyclicker = (function(){
   "nonillion",
   "decillion"];
   
-  var number_units = [
+  let number_units = [
     "",
     "un",
     "duo",
@@ -483,7 +672,7 @@ var ponyclicker = (function(){
     "nove",
   ];
   
-  var number_tens = [
+  let number_tens = [
     "",
     "deci",
     "viginti",
@@ -496,9 +685,9 @@ var ponyclicker = (function(){
     "nonaginta",
   ];
   // Flags: 1 - S, 2 - X, 4 - N, 8 - M
-  var number_tens_flags = [0, 4, 9, 5, 5, 5, 4, 4, 10];
+  let number_tens_flags = [0, 4, 9, 5, 5, 5, 4, 4, 10];
   
-  var number_hundreds = [
+  let number_hundreds = [
     "",
     "centi",
     "ducenti",
@@ -510,7 +699,7 @@ var ponyclicker = (function(){
     "octingenti",
     "nongenti",
   ];
-  var number_hundreds_flags = [0, 6, 4, 5, 5, 5, 4, 4, 10];
+  let number_hundreds_flags = [0, 6, 4, 5, 5, 5, 4, 4, 10];
   
   function NumberFlag(d2,d3,f)
   {
@@ -520,15 +709,15 @@ var ponyclicker = (function(){
   }
   function GetNumberName(d)
   {
-    var n = Math.floor((d-3)/3);
+    let n = Math.floor((d-3)/3);
     if(n<=number_names.length) return number_names[n-1];
     if(n>999) return "Infinity"; // this is actually impossible to reach because doubles don't go that high but I left it in here anyway.
-    var d1 = (n%10);
-    var d2 = (Math.floor(n/10)%10);
-    var d3 = Math.floor(n/100);
-    var n1 = number_units[d1];
-    var n2 = number_tens[d2];
-    var n3 = number_hundreds[d3];
+    let d1 = (n%10);
+    let d2 = (Math.floor(n/10)%10);
+    let d3 = Math.floor(n/100);
+    let n1 = number_units[d1];
+    let n2 = number_tens[d2];
+    let n3 = number_hundreds[d3];
     switch(d1)
     {
       case 3: // if flags has s or x, add s
@@ -545,15 +734,15 @@ var ponyclicker = (function(){
         break;
     }
     
-    var s = n1 + n2 + n3;
+    let s = n1 + n2 + n3;
     return s.substr(0, s.length-1) + "illion";
   }
-  function PrettyNumStatic(x, fixed, display, nohtml) {
+  function PrettyNumStatic(x:number, fixed:boolean, display:number, nohtml?:boolean) {
     if(!isFinite(x)) return "Infinity";
     switch(display)
     {
     case 0:
-      var d = Math.floor(Math.log10(x));
+      let d = Math.floor(Math.log10(x));
       if(d<6) return NumCommas(x);
       x = Math.floor(x/Math.pow(10,d-(d%3)-3));
       return (fixed?(x/1000).toFixed(3):(x/1000)) + " " + GetNumberName(d);
@@ -565,9 +754,9 @@ var ponyclicker = (function(){
       return (x<=999999)?NumCommas(x):(x.toExponential(3).replace("e+","&times;10<sup>")+'</sup>');
     }
   }
-  function PrettyNum(x, fixed, nohtml) { return PrettyNumStatic(x, fixed, Game.settings.numDisplay, nohtml); }
+  function PrettyNum(x:number, fixed?:boolean, nohtml?:boolean) { return PrettyNumStatic(x, fixed, Game.settings.numDisplay, nohtml); }
   function PrintTime(time) {
-    var t = [0, 0, 0, 0, 0]; // years, days, hours, minutes, seconds
+    let t:any[] = [0, 0, 0, 0, 0]; // years, days, hours, minutes, seconds
     t[4] = time % 60;
     time = (time - t[4]) / 60;
     t[3] = time % 60;
@@ -577,19 +766,19 @@ var ponyclicker = (function(){
     t[1] = time % 365;
     t[0] = (time - t[1]) / 365;
     if (t[0] > 100) return "Centuries"; // more than 100 years
-    for (var i = 3; i <= 4; i++) if (t[i] < 10) t[i] = "0" + t[i];
-    var output = (t[2]>0?(t[2] + ":"):"") + t[3] + ":" + t[4];
+    for (let i = 3; i <= 4; i++) if (t[i] < 10) t[i] = "0" + t[i];
+    let output = (t[2]>0?(t[2] + ":"):"") + t[3] + ":" + t[4];
     if (t[1]) output = t[1] + " day"+(t[1]!==1?'s':'')+" and " + output;
     if (t[0]) output = t[0] + " year"+(t[0]!==1?'s':'')+", " + output;
     return output;
   }
   function Pluralize2(n, s, s2, fixed, display) { return PrettyNumStatic(n, fixed, display) + ((n==1)?s:s2); }
-  function Pluralize(n, s, fixed) { return Pluralize2(n, s, s + 's', fixed, Game.settings.numDisplay); }
+  function Pluralize(n, s, fixed?) { return Pluralize2(n, s, s + 's', fixed, Game.settings.numDisplay); }
   
-  function gen_upgradetype1(item, pSPS, mSPS) { return function(sps, store) { var n = Math.max(store[item]-1,0); sps.pStore[item] += pSPS*n; sps.mStore[item] += mSPS*n; return sps; } }
+  function gen_upgradetype1(item, pSPS, mSPS) { return function(sps, store) { let n = Math.max(store[item]-1,0); sps.pStore[item] += pSPS*n; sps.mStore[item] += mSPS*n; return sps; } }
   function gen_upgradetype2(item, p, m) { return function(sps, store) { sps.pSPC += p*store[item]; sps.mSPC += m; return sps; } }
   function gen_upgradetype3(p, m) { return function(sps, store) { sps.pSPS += p; sps.mSPS += m; return sps; } }
-  function gen_finalupgrade(m) { return function(sps, store) { var b = (store[0]+store[1]+CountBuildings(store))*m; for(var i = 0; i < sps.mStore.length; ++i) sps.mStore[i] += b; return sps;} }
+  function gen_finalupgrade(m) { return function(sps, store) { let b = (store[0]+store[1]+CountBuildings(store))*m; for(let i = 0; i < sps.mStore.length; ++i) sps.mStore[i] += b; return sps;} }
   function gen_muffinupgrade(pSPS, mSPS) { return function(sps, store) { sps.mMuffin += mSPS*((typeof Game !== 'undefined')?Game.muffins:0); return sps; } }
 
   /* upgrade pool object: {
@@ -605,146 +794,180 @@ var ponyclicker = (function(){
   //
   // -------------------------------- Upgrade generation --------------------------------
   //
-  var defcond = function(){ return this.cost < (Game.totalsmiles*1.1)};
-  function genprecond(id) { return function() { return (Game.upgradeHash[id] !== undefined) && (this.cost < (Game.totalsmiles*1.1)); } }
-  function gencountcond(item, count) { return function() { return Game.store[item] >= count && this.cost < (Game.totalsmiles*1.2)} }
-  
-  var upgradeList = {
-    '1':{id:1, cost:600, name:"Booping Assistants", desc: "Booping gets +1 SPB for every pony you have.", fn:gen_upgradetype2(0, 1, 0), cond:defcond, flavor: 'Here Comes The Booping Squad.'},
-    '2':{id:2, cost:7000, name:"Friendship is Booping", desc: "Booping gets +1 SPB for every friendship you have.", fn:gen_upgradetype2(1, 1, 0), cond:defcond },
-    '3':{id:3, cost:80000, name:"Ticklish Cursors", desc: "Booping gets 1% of your SPS.", fn:gen_upgradetype2(0, 0, 0.01), cond:defcond},
-    '4':{id:4, cost:900000, name:"Feathered Cursors", desc: "Booping gets an additional 2% of your SPS.", fn:gen_upgradetype2(0, 0, 0.02), cond:defcond},
-    '5':{id:5, cost:10000000, name:"Advanced Tickle-fu", desc: "Booping gets an additional 3% of your SPS.", fn:gen_upgradetype2(0, 0, 0.03), cond:defcond},
-    '6':{id:6, cost:110000000, name:"Happiness Injection", desc: "Booping gets an additional 4% of your SPS.", fn:gen_upgradetype2(0, 0, 0.04), cond:defcond},
-    '7':{id:7, cost:700000, name:"Friendship Is Magic", desc: "Friendships generate +1 SPS for every other friendship.", fn:gen_upgradetype1(1, 1, 0), cond:defcond },
-    '8':{id:8, cost:10000000, name:"Friendship Is Spellcraft", desc: "Friendships generate +10 SPS for every other friendship.", fn:gen_upgradetype1(1, 10, 0), cond:defcond },
-    '9':{id:9, cost:500000000, name:"Friendship Is Sorcery", desc: "Friendships generate +100 SPS for every other friendship.", fn:gen_upgradetype1(1, 100, 0), cond:defcond },
-    '10':{id:10, cost:10000000000, name:"Friendship Is Witchcraft", desc: "Friendships generate +1000 SPS for every other friendship.", fn:gen_upgradetype1(1, 1000, 0), cond:defcond },
-    '11':{id:11, cost:300000000000, name:"Friendship Is Benefits", desc: "Friendships generate +10000 SPS for every other friendship.", fn:gen_upgradetype1(1, 10000, 0), cond:defcond },
-    '12':{id:12, cost:3800000000000, name:"Friendship Is Rainbows", desc: "Friendships generate +100000 SPS for every other friendship.", fn:gen_upgradetype1(1, 100000, 0), cond:defcond },
-    '13':{id:13, cost:7777777, name:"I just don't know what went wrong!", desc: "You gain +1% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.01), cond:defcond },
-    '14':{id:14, cost:7777777777, name:"That one mailmare", desc: "You gain an additional +2% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.02), cond:defcond },
-    '15':{id:15, cost:7777777777777, name:"Derpy Delivery Service", desc: "You gain an additional +3% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.03), cond:defcond },
-    '16':{id:16, cost:7777777777777777, name:"Blueberry Muffins", desc: "You gain an additional +4% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.04), cond:defcond },
-    '17':{id:17, cost:7777777777777777777, name:"Chocolate-chip Muffins", desc: "You gain an additional +5% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.05), cond:defcond },
-    '18':{id:18, cost:7777777777777777777777, name:"Lemon Muffins", desc: "You gain an additional +6% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.06), cond:defcond },
-    '19':{id:19, cost:7777777777777777777777777, name:"Poppy seed Muffins", desc: "You gain an additional +7% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.07), cond:defcond },
-    '20':{id:20, cost:7777777777777777777777777777, name:"Muffin Bakeries", desc: "You gain an additional +8% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.08), cond:defcond },
-    '21':{id:21, cost:7777777777777777777777777777777, name:"Designer Muffins", desc: "You gain an additional +9% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.09), cond:defcond },
-    '22':{id:22, cost:7777777777777777777777777777777777, name:"Muffin Factories", desc: "You gain an additional +10% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.1), cond:defcond },
-    '23':{id:23, cost:320000, name:"Row Row Your Boat", desc: "Recitals generate +1 SPS for every other recital.", fn:gen_upgradetype1(2, 1, 0), cond:defcond },
-    '24':{id:24, cost:9000000, name:"Fur Elise", desc: "Recitals generate +10 SPS for every other recital.", fn:gen_upgradetype1(2, 10, 0), cond:defcond },
-    '25':{id:25, cost:350000000, name:"Moonlight Sonata", desc: "Recitals generate +100 SPS for every other recital.", fn:gen_upgradetype1(2, 100, 0), cond:defcond },
-    '26':{id:26, cost:12000000000, name:"Tocatta In D Minor", desc: "Recitals generate +1000 SPS for every other recital.", fn:gen_upgradetype1(2, 1000, 0), cond:defcond },
-    '27':{id:27, cost:200000000000, name:"Nocturne", desc: "Recitals generate +10000 SPS for every other recital.", fn:gen_upgradetype1(2, 10000, 0), cond:defcond },
-    '28':{id:28, cost:660000, name:"Welcome Party", desc: "Parties generate +2 SPS for every other party.", fn:gen_upgradetype1(3, 2, 0), cond:defcond },
-    '29':{id:29, cost:50000000, name:"Birthday Party", desc: "Parties generate +20 SPS for every other party.", fn:gen_upgradetype1(3, 20, 0), cond:defcond },
-    '30':{id:30, cost:1000000000, name:"Cider Weekend", desc: "Parties generate +200 SPS for every other party.", fn:gen_upgradetype1(3, 200, 0), cond:defcond },
-    '31':{id:31, cost:20000000000, name:"Wedding", desc: "Parties generate +2000 SPS for every other party.", fn:gen_upgradetype1(3, 2000, 0), cond:defcond },
-    '32':{id:32, cost:320000000000, name:"Anniversary", desc: "Parties generate +20000 SPS for every other party.", fn:gen_upgradetype1(3, 20000, 0), cond:defcond },
-    '33':{id:33, cost:900000, name:"Mayor Day", desc: "Parades generate +4 SPS for every other parade.", fn:gen_upgradetype1(4, 4, 0), cond:defcond },
-    '34':{id:34, cost:100000000, name:"Celestia Day", desc: "Parades generate +40 SPS for every other parade.", fn:gen_upgradetype1(4, 40, 0), cond:defcond },
-    '35':{id:35, cost:2000000000, name:"Parade Day", desc: "Parades generate +400 SPS for every other parade.", fn:gen_upgradetype1(4, 400, 0), cond:defcond },
-    '36':{id:36, cost:40000000000, name:"Night Day ...?", desc: "Parades generate +4000 SPS for every other parade.", fn:gen_upgradetype1(4, 4000, 0), cond:defcond },
-    '37':{id:37, cost:850000000000, name:"Day Day ???", desc: "Parades generate +40000 SPS for every other parade.", fn:gen_upgradetype1(4, 40000, 0), cond:defcond },
-    '38':{id:38, cost:1000000, name:"Canon In D Major", desc: "Concerts generate +8 SPS for every other concert.", fn:gen_upgradetype1(5, 8, 0), cond:defcond, flavor: "It follows you everywhere. There is no escape." },
-    '39':{id:39, cost:100000000, name:"Four Seasons", desc: "Concerts generate +80 SPS for every other concert.", fn:gen_upgradetype1(5, 80, 0), cond:defcond },
-    '40':{id:40, cost:1750000000, name:"The Nutcracker", desc: "Concerts generate +800 SPS for every other concert.", fn:gen_upgradetype1(5, 800, 0), cond:defcond },
-    '41':{id:41, cost:80000000000, name:"Beethooven's Ninth", desc: "Concerts generate +8000 SPS for every other concert.", fn:gen_upgradetype1(5, 8000, 0), cond:defcond },
-    '42':{id:42, cost:1000000000000, name:"Requiem In D Minor", desc: "Concerts generate +80000 SPS for every other concert.", fn:gen_upgradetype1(5, 80000, 0), cond:defcond },
-    '43':{id:43, cost:1500000000, name:"Festive Festivities", desc: "Festivals generate twice as many smiles.", fn:gen_upgradetype1(6, 0, 1.0), cond:defcond },
-    '44':{id:44, cost:15000000000, name:"Flower Festival", desc: "Festivals smile generation doubled, again.", fn:gen_upgradetype1(6, 0, 1.0), cond:defcond },
-    //'45':{id:45, cost:150000000000, name:"Upgrade 6", desc: "Festivals smile generation doubled, again.", fn:gen_upgradetype1(6, 0, 1.0), cond:defcond },
-    //'46':{id:46, cost:1500000000000, name:"Upgrade 6", desc: "Festivals smile generation doubled, again.", fn:gen_upgradetype1(6, 0, 1.0), cond:defcond },
-    //'47':{id:47, cost:15000000000000, name:"Upgrade 6", desc: "Festivals smile generation doubled, again.", fn:gen_upgradetype1(6, 0, 1.0), cond:defcond },
-    '48':{id:48, cost:8000000, name:"DJ Pon-3", desc: "Raves generate +32 SPS for every other rave.", fn:gen_upgradetype1(7, 32, 0), cond:defcond },
-    '49':{id:49, cost:800000000, name:"Glaze", desc: "Raves generate +320 SPS for every other rave.", fn:gen_upgradetype1(7, 320, 0), cond:defcond },
-    '50':{id:50, cost:11000000000, name:"Glowsticks", desc: "Raves generate +3200 SPS for every other rave.", fn:gen_upgradetype1(7, 3200, 0), cond:defcond },
-    '51':{id:51, cost:160000000000, name:"Extra Glowsticks", desc: "Raves generate +32000 SPS for every other rave.", fn:gen_upgradetype1(7, 32000, 0), cond:defcond },
-    '52':{id:52, cost:2300000000000, name:"Subwoofers", desc: "Raves generate +320000 SPS for every other rave.", fn:gen_upgradetype1(7, 320000, 0), cond:defcond },
-    '53':{id:53, cost:16000000, name:"Two-bit Dress", desc: "Grand Galloping Galas generate +64 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 64, 0), cond:defcond },
-    '54':{id:54, cost:400000000, name:"Formal Attire", desc: "Grand Galloping Galas generate +640 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 640, 0), cond:defcond },
-    '55':{id:55, cost:6000000000, name:"Tailored Suit", desc: "Grand Galloping Galas generate +6400 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 6400, 0), cond:defcond },
-    '56':{id:56, cost:120000000000, name:"Rarity's Finest", desc: "Grand Galloping Galas generate +64000 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 64000, 0), cond:defcond },
-    '57':{id:57, cost:3000000000000, name:"Hats", desc: "Grand Galloping Galas generate +640000 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 640000, 0), cond:defcond },
-    '58':{id:58, cost:32000000, name:"Princess Twilight", desc: "Coronations generate +128 SPS for every other Coronation.", fn:gen_upgradetype1(9, 128, 0), cond:defcond },
-    '59':{id:59, cost:1500000000, name:"Princess Cadance", desc: "Coronations generate +1280 SPS for every other Coronation.", fn:gen_upgradetype1(9, 1280, 0), cond:defcond },
-    '60':{id:60, cost:22000000000, name:"Princess Derpy", desc: "Coronations generate +12800 SPS for every other Coronation.", fn:gen_upgradetype1(9, 12800, 0), cond:defcond },
-    '61':{id:61, cost:340000000000, name:"Princess Big Mac", desc: "Coronations generate +128000 SPS for every other Coronation.", fn:gen_upgradetype1(9, 128000, 0), cond:defcond },
-    '62':{id:62, cost:8000000000000, name:"Fausticorn", desc: "Coronations generate +1280000 SPS for every other Coronation.", fn:gen_upgradetype1(9, 1280000, 0), cond:defcond },
-    '63':{id:63, cost:64000000, name:"Three Day Weekend", desc: "National holidays generate +256 SPS for every other national holiday.", fn:gen_upgradetype1(10, 256, 0), cond:defcond },
-    '64':{id:64, cost:1500000000, name:"Extra Day Off", desc: "National holidays generate +2560 SPS for every other national holiday.", fn:gen_upgradetype1(10, 2560, 0), cond:defcond },
-    '65':{id:65, cost:22000000000, name:"Four Day Weekend", desc: "National holidays generate +25600 SPS for every other national holiday.", fn:gen_upgradetype1(10, 25600, 0), cond:defcond },
-    '66':{id:66, cost:300000000000, name:"Bonus Vacation Time", desc: "National holidays generate +256000 SPS for every other national holiday.", fn:gen_upgradetype1(10, 256000, 0), cond:defcond },
-    '67':{id:67, cost:900000000000, name:"Week-long Sabbatical", desc: "National holidays generate +2560000 SPS for every other national holiday.", fn:gen_upgradetype1(10, 2560000, 0), cond:defcond },
-    '68':{id:68, cost:100000, name:"Plain Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01), cond:defcond },
-    '69':{id:69, cost:1000000, name:"Poppyseed Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01), cond:defcond },
-    '70':{id:70, cost:10000000, name:"Blueberry Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01), cond:defcond },
-    '71':{id:71, cost:100000000, name:"Onion Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01), cond:defcond },
-    '72':{id:72, cost:1000000000, name:"Cinnamon Raisin Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01), cond:defcond },
-    '73':{id:73, cost:10000000000, name:"French Toast Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01), cond:defcond },
-    '74':{id:74, cost:100000000000, name:"Banana Bread Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01), cond:defcond },
-    '75':{id:75, cost:1000000000000, name:"Cheese Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05), cond:defcond },
-    '76':{id:76, cost:1500000000000, name:"Chocolate Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05), cond:defcond },
-    '77':{id:77, cost:2000000000000, name:"Cherry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05), cond:defcond },
-    '78':{id:78, cost:2500000000000, name:"Strawberry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05), cond:defcond },
-    '79':{id:79, cost:3000000000000, name:"Blueberry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05), cond:defcond },
-    '80':{id:80, cost:3500000000000, name:"Raspberry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05), cond:defcond },
-    '81':{id:81, cost:4000000000000, name:"Blackberry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05), cond:defcond },
-    '82':{id:82, cost:100000000000, name:"Friendship Is Friendly", desc: "Friendships gain +1% SPS.", fn:gen_upgradetype1(1, 0, 0.01), cond:defcond },
-    '83':{id:83, cost:30000000000, name:"Friendship Is Recitals", desc: "Recitals gain +1% SPS.", fn:gen_upgradetype1(2, 0, 0.01), cond:defcond },
-    '84':{id:84, cost:100000000000, name:"Friendship Is Parties", desc: "Parties gain +1% SPS.", fn:gen_upgradetype1(3, 0, 0.01), cond:defcond },
-    '85':{id:85, cost:200000000000, name:"Friendship Is Parades", desc: "Parades gain +1% SPS.", fn:gen_upgradetype1(4, 0, 0.01), cond:defcond },
-    '86':{id:86, cost:500000000000, name:"Friendship Is Concerts", desc: "Concerts gain +1% SPS.", fn:gen_upgradetype1(5, 0, 0.01), cond:defcond },
-    '87':{id:87, cost:1000000000000, name:"Friendship Is Festivals", desc: "Festivals gain +1% SPS.", fn:gen_upgradetype1(6, 0, 0.01), cond:defcond },
-    '88':{id:88, cost:2000000000000, name:"Friendship Is Raves", desc: "Raves gain +1% SPS.", fn:gen_upgradetype1(7, 0, 0.01), cond:defcond },
-    '89':{id:89, cost:10000000000000000, name:"Mirror Pool", desc: "Everything gets +0.01% SPS for everything else.", fn:gen_finalupgrade(0.0001), cond:defcond },
-    '90':{id:90, cost:40000000000000000, name:"Mirror Mirror Pool", desc: "Everything gets +0.02% SPS for everything else.", fn:gen_finalupgrade(0.0002), cond:genprecond(89) },
-    '91':{id:91, cost:800000000000000000, name:"Super Mirror Pool", desc: "Everything gets +0.04% SPS for everything else.", fn:gen_finalupgrade(0.0004), cond:genprecond(90) },
-    '92':{id:92, cost:1600000000000000000, name:"Duper Mirror Pool", desc: "Everything gets +0.07% SPS for everything else.", fn:gen_finalupgrade(0.0007), cond:genprecond(91) },
-    '93':{id:93, cost:3200000000000000000, name:"Hyper Mirror Pool", desc: "Everything gets +0.1% SPS for everything else.", fn:gen_finalupgrade(0.001), cond:genprecond(92) },
-    '94':{id:94, cost:9000000000000000000, name:"Ascended Mirror Pool", desc: "Everything gets +0.2% SPS for everything else.", fn:gen_finalupgrade(0.002), cond:genprecond(93) },
-    '95':{id:95, cost:50000000000000000000, name:"Mega Mirror Pool", desc: "Everything gets +0.4% SPS for everything else.", fn:gen_finalupgrade(0.004), cond:genprecond(94) },
-    '96':{id:96, cost:250000000000000000000, name:"Giga Mirror Pool", desc: "Everything gets +0.7% SPS for everything else.", fn:gen_finalupgrade(0.007), cond:genprecond(95) },
-    '97':{id:97, cost:1000000000000000000000, name:"Ultra Mirror Pool", desc: "Everything gets +1% SPS for everything else.", fn:gen_finalupgrade(0.01), cond:genprecond(96) },
-    '98':{id:98, cost:4000000000000000000000, name:"Master Mirror Pool", desc: "Everything gets +2% SPS for everything else.", fn:gen_finalupgrade(0.02), cond:genprecond(97) },
-    '99':{id:99, cost:12000000000000000000000, name:"Ultimate Mirror Pool", desc: "Everything gets +4% SPS for everything else.", fn:gen_finalupgrade(0.04), cond:genprecond(98) },
-    '100':{id:100, cost:24000000000000000000000, name:"Über Mirror Pool", desc: "Everything gets +7% SPS for everything else.", fn:gen_finalupgrade(0.07), cond:genprecond(99) },
-    '101':{id:101, cost:50000000000000000000000, name:"Omni Mirror Pool", desc: "Everything gets +10% SPS for everything else.", fn:gen_finalupgrade(0.1), cond:genprecond(100) },
-    '102':{id:102, cost:100000000000000000000000, name:"Supreme Mirror Pool", desc: "Everything gets +20% SPS for everything else.", fn:gen_finalupgrade(0.2), cond:genprecond(101) },
-    '103':{id:103, cost:200000000000000000000000, name:"Neo Mirror Pool", desc: "Everything gets +30% SPS for everything else.", fn:gen_finalupgrade(0.3), cond:genprecond(102) },
-    '104':{id:104, cost:500000000000000000000000, name:"Epic Mirror Pool", desc: "Everything gets +40% SPS for everything else.", fn:gen_finalupgrade(0.4), cond:genprecond(103) },
-    '105':{id:105, cost:1000000000000000000000000, name:"Global Mirror Pool", desc: "Everything gets +50% SPS for everything else.", fn:gen_finalupgrade(0.5), cond:genprecond(104) },
-    '106':{id:106, cost:2000000000000000000000000, name:"Solar Mirror Pool", desc: "Everything gets +60% SPS for everything else.", fn:gen_finalupgrade(0.6), cond:genprecond(105) },
-    '107':{id:107, cost:4000000000000000000000000, name:"Galactic Mirror Pool", desc: "Everything gets +70% SPS for everything else.", fn:gen_finalupgrade(0.7), cond:genprecond(106) },
-    '108':{id:108, cost:8000000000000000000000000, name:"Universal Mirror Pool", desc: "Everything gets +80% SPS for everything else.", fn:gen_finalupgrade(0.8), cond:genprecond(107) },
-    '109':{id:109, cost:15000000000000000000000000, name:"Cosmic Mirror Pool", desc: "Everything gets +90% SPS for everything else.", fn:gen_finalupgrade(0.9), cond:genprecond(108) },
-    '110':{id:110, cost:30000000000000000000000000, name:"Immortal Mirror Pool", desc: "Everything gets +100% SPS for everything else.", fn:gen_finalupgrade(1), cond:genprecond(109) },
-    '111':{id:111, cost:1000000000000000000000000000, name:"Forever Mirror Pool", desc: "Everything gets +1000% SPS for everything else.", fn:gen_finalupgrade(10), cond:genprecond(110) },
-    '112':{id:112, cost:100000000000000000000000000000, name:"Eternal Mirror Pool", desc: "Everything gets +10000% SPS for everything else.", fn:gen_finalupgrade(100), cond:genprecond(111) },
-    '113':{id:113, cost:100000000000000000000000000000000, name:"Final Mirror Pool", desc: "Everything gets +100000% SPS for everything else.", fn:gen_finalupgrade(1000), cond:genprecond(112) },
+  //let defcond = function(){ return this.cost < (Game.totalsmiles*1.1)};
+  function genprecond(id) { return () =>(Game.upgradeHash[id] !== undefined) && (this.cost < (Game.totalsmiles*1.1)) }
+  //function gencountcond(item, count) { return () =>Game.store[item] >= count && this.cost < (Game.totalsmiles*1.2)}
+  interface upgradeI{
+    id:number
+    cost:number
+    name:string
+    desc:string
+    fn:(sps,store)=>any
+    flavor?:string
+    cond?()
+  }
+  interface upgrade extends upgradeI{}
+  class upgrade{
+    constructor(upg:upgradeI){
+      this.id = upg.id;
+      this.cost = upg.cost;
+      this.name = upg.name;
+      this.desc = upg.desc;
+      this.fn = upg.fn;
+      if(upg.cond !== undefined) this.cond = upg.cond;
+      if(upg.flavor !== undefined) this.flavor = upg.flavor;
+    }
+    cond(){
+      return this.cost < (Game.totalsmiles*1.1);
+    }
+  }
+  interface upgradeList{
+    [id:string]:upgrade
+  }
+  let upgradeList:upgradeList = {
+    '1':new upgrade({id:1, cost:600, name:"Booping Assistants", desc: "Booping gets +1 SPB for every pony you have.", fn:gen_upgradetype2(0, 1, 0), flavor: 'Here Comes The Booping Squad.'}),
+    '2':new upgrade({id:2, cost:7e3, name:"Friendship is Booping", desc: "Booping gets +1 SPB for every friendship you have.", fn:gen_upgradetype2(1, 1, 0) }),
+    '3':new upgrade({id:3, cost:80e3, name:"Ticklish Cursors", desc: "Booping gets 1% of your SPS.", fn:gen_upgradetype2(0, 0, 0.01)}),
+    '4':new upgrade({id:4, cost:900e3, name:"Feathered Cursors", desc: "Booping gets an additional 2% of your SPS.", fn:gen_upgradetype2(0, 0, 0.02)}),
+    '5':new upgrade({id:5, cost:10e6, name:"Advanced Tickle-fu", desc: "Booping gets an additional 3% of your SPS.", fn:gen_upgradetype2(0, 0, 0.03) }),
+    '6':new upgrade({id:6, cost:110e6, name:"Happiness Injection", desc: "Booping gets an additional 4% of your SPS.", fn:gen_upgradetype2(0, 0, 0.04) }),
+    '7':new upgrade({id:7, cost:700e3, name:"Friendship Is Magic", desc: "Friendships generate +1 SPS for every other friendship.", fn:gen_upgradetype1(1, 1, 0)  }),
+    '8':new upgrade({id:8, cost:10e6, name:"Friendship Is Spellcraft", desc: "Friendships generate +10 SPS for every other friendship.", fn:gen_upgradetype1(1, 10, 0)  }),
+    '9':new upgrade({id:9, cost:500e6, name:"Friendship Is Sorcery", desc: "Friendships generate +100 SPS for every other friendship.", fn:gen_upgradetype1(1, 100, 0)  }),
+    '10':new upgrade({id:10, cost:10e9, name:"Friendship Is Witchcraft", desc: "Friendships generate +1000 SPS for every other friendship.", fn:gen_upgradetype1(1, 1000, 0)  }),
+    '11':new upgrade({id:11, cost:300e9, name:"Friendship Is Benefits", desc: "Friendships generate +10000 SPS for every other friendship.", fn:gen_upgradetype1(1, 10000, 0)  }),
+    '12':new upgrade({id:12, cost:3.8e12, name:"Friendship Is Rainbows", desc: "Friendships generate +100000 SPS for every other friendship.", fn:gen_upgradetype1(1, 100000, 0)  }),
+    '13':new upgrade({id:13, cost:7777777, name:"I just don't know what went wrong!", desc: "You gain +1% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.01)  }),
+    '14':new upgrade({id:14, cost:7777777777, name:"That one mailmare", desc: "You gain an additional +2% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.02)  }),
+    '15':new upgrade({id:15, cost:7777777777777, name:"Derpy Delivery Service", desc: "You gain an additional +3% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.03)  }),
+    '16':new upgrade({id:16, cost:7777777777777777, name:"Blueberry Muffins", desc: "You gain an additional +4% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.04)  }),
+    '17':new upgrade({id:17, cost:7777777777777777777, name:"Chocolate-chip Muffins", desc: "You gain an additional +5% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.05)  }),
+    '18':new upgrade({id:18, cost:7777777777777777777777, name:"Lemon Muffins", desc: "You gain an additional +6% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.06)  }),
+    '19':new upgrade({id:19, cost:7777777777777777777777777, name:"Poppy seed Muffins", desc: "You gain an additional +7% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.07)  }),
+    '20':new upgrade({id:20, cost:7777777777777777777777777777, name:"Muffin Bakeries", desc: "You gain an additional +8% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.08)  }),
+    '21':new upgrade({id:21, cost:7777777777777777777777777777777, name:"Designer Muffins", desc: "You gain an additional +9% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.09)  }),
+    '22':new upgrade({id:22, cost:7777777777777777777777777777777777, name:"Muffin Factories", desc: "You gain an additional +10% SPS for every muffin you have.", fn:gen_muffinupgrade(0, 0.1)  }),
+    '23':new upgrade({id:23, cost:320e3, name:"Row Row Your Boat", desc: "Recitals generate +1 SPS for every other recital.", fn:gen_upgradetype1(2, 1, 0)  }),
+    '24':new upgrade({id:24, cost:9e6, name:"Fur Elise", desc: "Recitals generate +10 SPS for every other recital.", fn:gen_upgradetype1(2, 10, 0)  }),
+    '25':new upgrade({id:25, cost:350e6, name:"Moonlight Sonata", desc: "Recitals generate +100 SPS for every other recital.", fn:gen_upgradetype1(2, 100, 0)  }),
+    '26':new upgrade({id:26, cost:12e9, name:"Tocatta In D Minor", desc: "Recitals generate +1000 SPS for every other recital.", fn:gen_upgradetype1(2, 1000, 0)  }),
+    '27':new upgrade({id:27, cost:200e9, name:"Nocturne", desc: "Recitals generate +10000 SPS for every other recital.", fn:gen_upgradetype1(2, 10000, 0)  }),
+    '28':new upgrade({id:28, cost:660e3, name:"Welcome Party", desc: "Parties generate +2 SPS for every other party.", fn:gen_upgradetype1(3, 2, 0)  }),
+    '29':new upgrade({id:29, cost:50e6, name:"Birthday Party", desc: "Parties generate +20 SPS for every other party.", fn:gen_upgradetype1(3, 20, 0)  }),
+    '30':new upgrade({id:30, cost:1e9, name:"Cider Weekend", desc: "Parties generate +200 SPS for every other party.", fn:gen_upgradetype1(3, 200, 0)  }),
+    '31':new upgrade({id:31, cost:20e9, name:"Wedding", desc: "Parties generate +2000 SPS for every other party.", fn:gen_upgradetype1(3, 2000, 0)  }),
+    '32':new upgrade({id:32, cost:320e9, name:"Anniversary", desc: "Parties generate +20000 SPS for every other party.", fn:gen_upgradetype1(3, 20000, 0)  }),
+    '33':new upgrade({id:33, cost:900e3, name:"Mayor Day", desc: "Parades generate +4 SPS for every other parade.", fn:gen_upgradetype1(4, 4, 0)  }),
+    '34':new upgrade({id:34, cost:100e6, name:"Celestia Day", desc: "Parades generate +40 SPS for every other parade.", fn:gen_upgradetype1(4, 40, 0)  }),
+    '35':new upgrade({id:35, cost:2e9, name:"Parade Day", desc: "Parades generate +400 SPS for every other parade.", fn:gen_upgradetype1(4, 400, 0)  }),
+    '36':new upgrade({id:36, cost:40e9, name:"Night Day ...?", desc: "Parades generate +4000 SPS for every other parade.", fn:gen_upgradetype1(4, 4000, 0)  }),
+    '37':new upgrade({id:37, cost:850e9, name:"Day Day ???", desc: "Parades generate +40000 SPS for every other parade.", fn:gen_upgradetype1(4, 40000, 0)  }),
+    '38':new upgrade({id:38, cost:1e6, name:"Canon In D Major", desc: "Concerts generate +8 SPS for every other concert.", fn:gen_upgradetype1(5, 8, 0) , flavor: "It follows you everywhere. There is no escape." }),
+    '39':new upgrade({id:39, cost:100e6, name:"Four Seasons", desc: "Concerts generate +80 SPS for every other concert.", fn:gen_upgradetype1(5, 80, 0)  }),
+    '40':new upgrade({id:40, cost:1.75e9, name:"The Nutcracker", desc: "Concerts generate +800 SPS for every other concert.", fn:gen_upgradetype1(5, 800, 0)  }),
+    '41':new upgrade({id:41, cost:80e9, name:"Beethooven's Ninth", desc: "Concerts generate +8000 SPS for every other concert.", fn:gen_upgradetype1(5, 8000, 0)  }),
+    '42':new upgrade({id:42, cost:1e12, name:"Requiem In D Minor", desc: "Concerts generate +80000 SPS for every other concert.", fn:gen_upgradetype1(5, 80000, 0)  }),
+    '43':new upgrade({id:43, cost:1.5e9, name:"Festive Festivities", desc: "Festivals generate twice as many smiles.", fn:gen_upgradetype1(6, 0, 1.0)  }),
+    '44':new upgrade({id:44, cost:15e9, name:"Flower Festival", desc: "Festivals smile generation doubled, again.", fn:gen_upgradetype1(6, 0, 1.0)  }),
+    //'45':new upgrade({id:45, cost:150e9, name:"Upgrade 6", desc: "Festivals smile generation doubled, again.", fn:gen_upgradetype1(6, 0, 1.0)  }),
+    //'46':new upgrade({id:46, cost:1.5e12, name:"Upgrade 6", desc: "Festivals smile generation doubled, again.", fn:gen_upgradetype1(6, 0, 1.0)  }),
+    //'47':new upgrade({id:47, cost:15e12, name:"Upgrade 6", desc: "Festivals smile generation doubled, again.", fn:gen_upgradetype1(6, 0, 1.0)  }),
+    '48':new upgrade({id:48, cost:8e6, name:"DJ Pon-3", desc: "Raves generate +32 SPS for every other rave.", fn:gen_upgradetype1(7, 32, 0)  }),
+    '49':new upgrade({id:49, cost:800e6, name:"Glaze", desc: "Raves generate +320 SPS for every other rave.", fn:gen_upgradetype1(7, 320, 0)  }),
+    '50':new upgrade({id:50, cost:11e9, name:"Glowsticks", desc: "Raves generate +3200 SPS for every other rave.", fn:gen_upgradetype1(7, 3200, 0)  }),
+    '51':new upgrade({id:51, cost:160e9, name:"Extra Glowsticks", desc: "Raves generate +32000 SPS for every other rave.", fn:gen_upgradetype1(7, 32000, 0)  }),
+    '52':new upgrade({id:52, cost:2.3e12, name:"Subwoofers", desc: "Raves generate +320000 SPS for every other rave.", fn:gen_upgradetype1(7, 320000, 0)  }),
+    '53':new upgrade({id:53, cost:16e6, name:"Two-bit Dress", desc: "Grand Galloping Galas generate +64 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 64, 0)  }),
+    '54':new upgrade({id:54, cost:400e6, name:"Formal Attire", desc: "Grand Galloping Galas generate +640 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 640, 0)  }),
+    '55':new upgrade({id:55, cost:6e9, name:"Tailored Suit", desc: "Grand Galloping Galas generate +6400 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 6400, 0)  }),
+    '56':new upgrade({id:56, cost:120e9, name:"Rarity's Finest", desc: "Grand Galloping Galas generate +64000 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 64000, 0)  }),
+    '57':new upgrade({id:57, cost:3e12, name:"Hats", desc: "Grand Galloping Galas generate +640000 SPS for every other Grand Galloping Gala.", fn:gen_upgradetype1(8, 640000, 0)  }),
+    '58':new upgrade({id:58, cost:32e6, name:"Princess Twilight", desc: "Coronations generate +128 SPS for every other Coronation.", fn:gen_upgradetype1(9, 128, 0)  }),
+    '59':new upgrade({id:59, cost:1.5e9, name:"Princess Cadance", desc: "Coronations generate +1280 SPS for every other Coronation.", fn:gen_upgradetype1(9, 1280, 0)  }),
+    '60':new upgrade({id:60, cost:22e9, name:"Princess Derpy", desc: "Coronations generate +12800 SPS for every other Coronation.", fn:gen_upgradetype1(9, 12800, 0)  }),
+    '61':new upgrade({id:61, cost:340e9, name:"Princess Big Mac", desc: "Coronations generate +128000 SPS for every other Coronation.", fn:gen_upgradetype1(9, 128000, 0)  }),
+    '62':new upgrade({id:62, cost:8e12, name:"Fausticorn", desc: "Coronations generate +1280000 SPS for every other Coronation.", fn:gen_upgradetype1(9, 1280000, 0)  }),
+    '63':new upgrade({id:63, cost:64e6, name:"Three Day Weekend", desc: "National holidays generate +256 SPS for every other national holiday.", fn:gen_upgradetype1(10, 256, 0)  }),
+    '64':new upgrade({id:64, cost:1.5e9, name:"Extra Day Off", desc: "National holidays generate +2560 SPS for every other national holiday.", fn:gen_upgradetype1(10, 2560, 0)  }),
+    '65':new upgrade({id:65, cost:22e9, name:"Four Day Weekend", desc: "National holidays generate +25600 SPS for every other national holiday.", fn:gen_upgradetype1(10, 25600, 0)  }),
+    '66':new upgrade({id:66, cost:300e9, name:"Bonus Vacation Time", desc: "National holidays generate +256000 SPS for every other national holiday.", fn:gen_upgradetype1(10, 256000, 0)  }),
+    '67':new upgrade({id:67, cost:900e9, name:"Week-long Sabbatical", desc: "National holidays generate +2560000 SPS for every other national holiday.", fn:gen_upgradetype1(10, 2560000, 0)  }),
+    '68':new upgrade({id:68, cost:100e3, name:"Plain Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01)  }),
+    '69':new upgrade({id:69, cost:1e6, name:"Poppyseed Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01)  }),
+    '70':new upgrade({id:70, cost:10e6, name:"Blueberry Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01)  }),
+    '71':new upgrade({id:71, cost:100e6, name:"Onion Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01)  }),
+    '72':new upgrade({id:72, cost:1e9, name:"Cinnamon Raisin Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01)  }),
+    '73':new upgrade({id:73, cost:10e9, name:"French Toast Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01)  }),
+    '74':new upgrade({id:74, cost:100e9, name:"Banana Bread Bagels", desc: "+1% smiles per second", fn:gen_upgradetype3(0, 0.01)  }),
+    '75':new upgrade({id:75, cost:1e12, name:"Cheese Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05)  }),
+    '76':new upgrade({id:76, cost:1.5e12, name:"Chocolate Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05)  }),
+    '77':new upgrade({id:77, cost:2e12, name:"Cherry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05)  }),
+    '78':new upgrade({id:78, cost:2.5e12, name:"Strawberry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05)  }),
+    '79':new upgrade({id:79, cost:3e12, name:"Blueberry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05)  }),
+    '80':new upgrade({id:80, cost:3.5e12, name:"Raspberry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05)  }),
+    '81':new upgrade({id:81, cost:4e12, name:"Blackberry Pastry", desc: "+5% smiles per second", fn:gen_upgradetype3(0, 0.05)  }),
+    '82':new upgrade({id:82, cost:100e9, name:"Friendship Is Friendly", desc: "Friendships gain +1% SPS.", fn:gen_upgradetype1(1, 0, 0.01)  }),
+    '83':new upgrade({id:83, cost:30e9, name:"Friendship Is Recitals", desc: "Recitals gain +1% SPS.", fn:gen_upgradetype1(2, 0, 0.01)  }),
+    '84':new upgrade({id:84, cost:100e9, name:"Friendship Is Parties", desc: "Parties gain +1% SPS.", fn:gen_upgradetype1(3, 0, 0.01)  }),
+    '85':new upgrade({id:85, cost:200e9, name:"Friendship Is Parades", desc: "Parades gain +1% SPS.", fn:gen_upgradetype1(4, 0, 0.01)  }),
+    '86':new upgrade({id:86, cost:500e9, name:"Friendship Is Concerts", desc: "Concerts gain +1% SPS.", fn:gen_upgradetype1(5, 0, 0.01)  }),
+    '87':new upgrade({id:87, cost:1e12, name:"Friendship Is Festivals", desc: "Festivals gain +1% SPS.", fn:gen_upgradetype1(6, 0, 0.01)  }),
+    '88':new upgrade({id:88, cost:2e12, name:"Friendship Is Raves", desc: "Raves gain +1% SPS.", fn:gen_upgradetype1(7, 0, 0.01)  }),
+    '89':new upgrade({id:89, cost:10e15, name:"Mirror Pool", desc: "Everything gets +0.01% SPS for everything else.", fn:gen_finalupgrade(0.0001)  }),
+    '90':new upgrade({id:90, cost:40e15, name:"Mirror Mirror Pool", desc: "Everything gets +0.02% SPS for everything else.", fn:gen_finalupgrade(0.0002), cond:genprecond(89) }),
+    '91':new upgrade({id:91, cost:800e15, name:"Super Mirror Pool", desc: "Everything gets +0.04% SPS for everything else.", fn:gen_finalupgrade(0.0004), cond:genprecond(90) }),
+    '92':new upgrade({id:92, cost:1.6e18, name:"Duper Mirror Pool", desc: "Everything gets +0.07% SPS for everything else.", fn:gen_finalupgrade(0.0007), cond:genprecond(91) }),
+    '93':new upgrade({id:93, cost:3.2e18, name:"Hyper Mirror Pool", desc: "Everything gets +0.1% SPS for everything else.", fn:gen_finalupgrade(0.001), cond:genprecond(92) }),
+    '94':new upgrade({id:94, cost:9e18, name:"Ascended Mirror Pool", desc: "Everything gets +0.2% SPS for everything else.", fn:gen_finalupgrade(0.002), cond:genprecond(93) }),
+    '95':new upgrade({id:95, cost:50e18, name:"Mega Mirror Pool", desc: "Everything gets +0.4% SPS for everything else.", fn:gen_finalupgrade(0.004), cond:genprecond(94) }),
+    '96':new upgrade({id:96, cost:250e18, name:"Giga Mirror Pool", desc: "Everything gets +0.7% SPS for everything else.", fn:gen_finalupgrade(0.007), cond:genprecond(95) }),
+    '97':new upgrade({id:97, cost:1e21, name:"Ultra Mirror Pool", desc: "Everything gets +1% SPS for everything else.", fn:gen_finalupgrade(0.01), cond:genprecond(96) }),
+    '98':new upgrade({id:98, cost:4e21, name:"Master Mirror Pool", desc: "Everything gets +2% SPS for everything else.", fn:gen_finalupgrade(0.02), cond:genprecond(97) }),
+    '99':new upgrade({id:99, cost:12e21, name:"Ultimate Mirror Pool", desc: "Everything gets +4% SPS for everything else.", fn:gen_finalupgrade(0.04), cond:genprecond(98) }),
+    '100':new upgrade({id:100, cost:24e21, name:"Über Mirror Pool", desc: "Everything gets +7% SPS for everything else.", fn:gen_finalupgrade(0.07), cond:genprecond(99) }),
+    '101':new upgrade({id:101, cost:50e21, name:"Omni Mirror Pool", desc: "Everything gets +10% SPS for everything else.", fn:gen_finalupgrade(0.1), cond:genprecond(100) }),
+    '102':new upgrade({id:102, cost:100e21, name:"Supreme Mirror Pool", desc: "Everything gets +20% SPS for everything else.", fn:gen_finalupgrade(0.2), cond:genprecond(101) }),
+    '103':new upgrade({id:103, cost:200e21, name:"Neo Mirror Pool", desc: "Everything gets +30% SPS for everything else.", fn:gen_finalupgrade(0.3), cond:genprecond(102) }),
+    '104':new upgrade({id:104, cost:500e21, name:"Epic Mirror Pool", desc: "Everything gets +40% SPS for everything else.", fn:gen_finalupgrade(0.4), cond:genprecond(103) }),
+    '105':new upgrade({id:105, cost:1e24, name:"Global Mirror Pool", desc: "Everything gets +50% SPS for everything else.", fn:gen_finalupgrade(0.5), cond:genprecond(104) }),
+    '106':new upgrade({id:106, cost:2e24, name:"Solar Mirror Pool", desc: "Everything gets +60% SPS for everything else.", fn:gen_finalupgrade(0.6), cond:genprecond(105) }),
+    '107':new upgrade({id:107, cost:4e24, name:"Galactic Mirror Pool", desc: "Everything gets +70% SPS for everything else.", fn:gen_finalupgrade(0.7), cond:genprecond(106) }),
+    '108':new upgrade({id:108, cost:8e24, name:"Universal Mirror Pool", desc: "Everything gets +80% SPS for everything else.", fn:gen_finalupgrade(0.8), cond:genprecond(107) }),
+    '109':new upgrade({id:109, cost:15e24, name:"Cosmic Mirror Pool", desc: "Everything gets +90% SPS for everything else.", fn:gen_finalupgrade(0.9), cond:genprecond(108) }),
+    '110':new upgrade({id:110, cost:30e24, name:"Immortal Mirror Pool", desc: "Everything gets +100% SPS for everything else.", fn:gen_finalupgrade(1), cond:genprecond(109) }),
+    '111':new upgrade({id:111, cost:1e27, name:"Forever Mirror Pool", desc: "Everything gets +1000% SPS for everything else.", fn:gen_finalupgrade(10), cond:genprecond(110) }),
+    '112':new upgrade({id:112, cost:100e27, name:"Eternal Mirror Pool", desc: "Everything gets +10000% SPS for everything else.", fn:gen_finalupgrade(100), cond:genprecond(111) }),
+    '113':new upgrade({id:113, cost:100e30, name:"Final Mirror Pool", desc: "Everything gets +100000% SPS for everything else.", fn:gen_finalupgrade(1000), cond:genprecond(112) }),
   };
-
-  var curUpgradeList = [];
+  let curUpgradeList = [];
 
   //
   // -------------------------------- Achievement Generation --------------------------------
   //
-  var achievementList = {
+  interface achievmentI{
+    name:string,
+    desc:string,
+    muffins:number
+    cond?:()=>boolean
+  }
+  interface achievementList{
+    [id:string]:achievmentI
+  }
+  var achievementList : achievementList = {
     '1': { name:"Participation Award", desc: "You moved the mouse!", muffins:0},
-    '2': { name:"Hi there!", desc: "Boop a pony <b>once</b>.", muffins:0, cond:function(){ return Game.clicks > 0; } },
+    '2': { name:"Hi there!", desc: "Boop a pony <b>once</b>.", muffins:0, cond:() => Game.clicks > 0 },
     '200': { name:"Cautious", desc: "Manually save the game.", muffins:1},
     '201': { name:"Paranoid", desc: "Export a save.", muffins:1},
     '202': { name:"Time Machine", desc: "Import a save.", muffins:1},
     '203': { name:"Narcissism!", desc: "Click the image of Cloud Hop on the credits page.", muffins:1},
     '204': { name:"Music Makes Everything Better", desc: "Listen to the smile song.", muffins:1},
     '205': { name:"You Monster", desc: "Sell a friendship.", muffins:1},
-    '206': { name:"No Booping Allowed", desc: "Get <b>"+PrettyNumStatic(1000000000000, false, 0)+"</b> smiles with only 35 pony boops.", muffins:1, cond:function() { return Game.clicks <= 35 && Game.totalsmiles >= 1000000000000; } },
-    '207': { name:"Wheel of Friendship", desc: "Spin the ponies.", muffins:1, cond:function() { return Math.abs(vangle)>0.05; } },
-    //'208': { name:"Centrifuge of Friendship", desc: "Spin the ponies <b>really fast</b>.", muffins:2, cond:function() { return Math.abs(vangle)>3; } },
-    '209': { name:"Obliviate", desc: "Reset the game <b>once</b>.", muffins:1, cond:function() { return Game.resets>0; } },
-    '210': { name:"Zeeky Boogy Doog", desc: "Reset the game <b>10 times</b>.", muffins:2, cond:function() { return Game.resets>=10; } },
-    '211': { name:"September", desc: "Reset the game <b>20 times</b>.", muffins:3, cond:function() { return Game.resets>=20; } },
+    '206': { name:"No Booping Allowed", desc: "Get <b>"+PrettyNumStatic(1000000000000, false, 0)+"</b> smiles with only 35 pony boops.", muffins:1, cond:() => Game.clicks <= 35 && Game.totalsmiles >= 1e12 },
+    '207': { name:"Wheel of Friendship", desc: "Spin the ponies.", muffins:1, cond:() =>Math.abs(vangle)>0.05 },
+    //'208': { name:"Centrifuge of Friendship", desc: "Spin the ponies <b>really fast</b>.", muffins:2, cond:() =>Math.abs(vangle)>3; } },
+    '209': { name:"Obliviate", desc: "Reset the game <b>once</b>.", muffins:1, cond:() =>Game.resets>0 },
+    '210': { name:"Zeeky Boogy Doog", desc: "Reset the game <b>10 times</b>.", muffins:2, cond:() =>Game.resets>=10 },
+    '211': { name:"September", desc: "Reset the game <b>20 times</b>.", muffins:3, cond:() =>Game.resets>=20 },
     '212': { name:"Zero", desc: "Reset the game with <b>"+PrettyNumStatic(1000000000, false, 0)+" smiles</b>.", muffins:1 },
     '213': { name:"Nada", desc: "Reset the game with <b>"+PrettyNumStatic(1000000000000, false, 0)+" smiles</b>.", muffins:2 },
     '214': { name:"Zilch", desc: "Reset the game with <b>"+PrettyNumStatic(1000000000000000, false, 0)+" smiles</b>.", muffins:3 },
@@ -755,20 +978,20 @@ var ponyclicker = (function(){
     '219': { name:"Nevermore", desc: "Reset the game with <b>"+PrettyNumStatic(1000000000000000000000000000000, false, 0)+" smiles</b>.", muffins:8 },
     
     //'229': { name:"Prepare For The End", desc: "Find the secret song reference.", muffins:1 },
-    '230': { name:"What Have You Done", desc: "Buy the mirror pool.", muffins:5, cond:function() { return (Game.upgradeHash['89'] !== undefined); } },
-    '231': { name:"Too Many Pinkie Pies", desc: "Pop <b>10 pinkie clones</b>.", muffins:1, cond:function() { return Game.clonespopped>=10; } },
-    '232': { name:"Look, a Birdie!", desc: "Pop <b>100 pinkie clones</b>", muffins:2, cond:function() { return Game.clonespopped>=100; } },
-    '233': { name:"Reviewing Is Magic 5", desc: "Pop <b>400 pinkie clones</b>.", muffins:3, cond:function() { return Game.clonespopped>=400; } },
-    '234': { name:"Fixer Upper", desc: "Buy all the upgrades.", muffins:1, cond:function() { return Game.upgrades.length==Object.keys(upgradeList).length; }},
+    '230': { name:"What Have You Done", desc: "Buy the mirror pool.", muffins:5, cond:() =>(Game.upgradeHash['89'] !== undefined) },
+    '231': { name:"Too Many Pinkie Pies", desc: "Pop <b>10 pinkie clones</b>.", muffins:1, cond:() =>Game.clonespopped>=10 },
+    '232': { name:"Look, a Birdie!", desc: "Pop <b>100 pinkie clones</b>", muffins:2, cond:() =>Game.clonespopped>=100 },
+    '233': { name:"Reviewing Is Magic 5", desc: "Pop <b>400 pinkie clones</b>.", muffins:3, cond:() =>Game.clonespopped>=400 },
+    '234': { name:"Fixer Upper", desc: "Buy all the upgrades.", muffins:1, cond:() =>Game.upgrades.length==Object.keys(upgradeList).length},
     
-    '255': { name:"Completionist", desc: "Get all the achievements.", muffins:100}
+    '255': { name:"Compvarionist", desc: "Get all the achievements.", muffins:100}
   };
 
   function genAchievements(names, amounts, descgen, condgen) {
-    var ids = [];
+    let ids = [];
 
     if(names.length != amounts.length) { alert("ERROR: names != amounts"); }
-    for(var i = 0; i < names.length; ++i) {
+    for(let i = 0; i < names.length; ++i) {
       ids.push(achievementCount);
       achievementList[achievementCount++] = { name:names[i], desc: descgen(amounts[i]), muffins:(i+1), cond:condgen(amounts[i]) };
     }
@@ -776,32 +999,32 @@ var ponyclicker = (function(){
     return ids;
   }
 
-  var extraAchievements = Object.keys(achievementList).length-3; // minus three because the array starts at 1 instead of 0
-  var achievementCount = 3;
-  var achievements_clicks = genAchievements(
+  let extraAchievements = Object.keys(achievementList).length-3; // minus three because the array starts at 1 instead of 0
+  let achievementCount = 3;
+  let achievements_clicks = genAchievements(
     ["That tickles!", "Tickle War", "Tickle War II: The Retickling", "This Can't Be Healthy", "Carpal Tunnel Syndrome", "Wrist In Pieces", "It's Over Nine Thousand!"],
     [10,100,500,1000,2500,5000,9001],
     function(n) { return "Boop a pony <b>"+PrettyNumStatic(n, false, 0)+"</b> times."; },
-    function(n) { return function() { return Game.clicks >= n; }; });
+    function(n) { return () =>Game.clicks >= n; });
   achievements_clicks.push(2);
 
-  var achievements_smiles = genAchievements(
+  let achievements_smiles = genAchievements(
     ["Joy", "Glee", "Bliss", "Nirvana", "Ecstasy", "Pursuit of Happyness", "You Can Stop Now", "This Is Ridiculous", "Go Read A Book", "How?!"],
     [100,10000,1000000,100000000,10000000000,1000000000000,100000000000000,10000000000000000,1000000000000000000,100000000000000000000],
     function(n) { return "Get <b>"+PrettyNumStatic(n, false, 0)+"</b> smiles."; },
-    function(n) { return function() { return Game.totalsmiles >= n; }; });
+    function(n) { return () =>Game.totalsmiles >= n; });
   achievements_smiles.push(206); // Add "No Booping Allowed".
 
   function genShopCond(item) {
-    return function(n) { return function() { return Game.store[item]>=n; }; };
+    return function(n) { return () =>Game.store[item]>=n;  };
   }
 
-  var achievements_shop = [];
+  let achievements_shop = [];
   function genShopAchievements(item, names) {
     return genAchievements(
     names,
     [1, 50, 100, 150, 200],
-    function(n) { return "Buy <b>"+Pluralize2(n, "</b> " + Store[item].name.toLowerCase(), "</b> " + Store[item].plural.toLowerCase(), false, 0) + "."; },
+    (n) => "Buy <b>"+Pluralize2(n, "</b> " + Store[item].name.toLowerCase(), "</b> " + Store[item].plural.toLowerCase(), false, 0) + ".",
     genShopCond(item));
   }
 
@@ -838,7 +1061,7 @@ var ponyclicker = (function(){
   function ResizeCanvas() {
     canvas.width  = pbg.offsetWidth;
     canvas.height = pb.offsetHeight;
-    if(Game.settings.wheelDisplay == 0) OrganizePonies();
+    if(Game.settings.wheelDisplay == displayWheel.entire) OrganizePonies();
   }
   
   function appendStoreClick($el,index){
@@ -861,7 +1084,7 @@ var ponyclicker = (function(){
   }
 
   function Click(id) {
-      var amount = Math.floor(Game.SPC);
+      let amount = Math.floor(Game.SPC);
       Earn(amount);
       Game.clicks += 1;
       $stat_clicks.html(PrettyNum(Game.clicks));
@@ -895,23 +1118,23 @@ var ponyclicker = (function(){
     }
   }
   function CheckAchievements(list) {
-    for(var i = 0; i < list.length; ++i) {
+    for(let i = 0; i < list.length; ++i) {
       if(achievementList[list[i]].cond !== undefined && achievementList[list[i]].cond()) {
         EarnAchievement(list[i]);
       }
     }
   }
   function CountBuildings(store) {
-    var count = 0;
-    for(var i = 2; i < store.length; ++i)
+    let count = 0;
+    for(let i = 2; i < store.length; ++i)
       count += store[i];
     return count;
   }
   // Seperating this out lets us make predictions on what a purchase will do to your SPS
   function CalcSPS(store, upgrades, cupcakes, docache) {
-    var res = CalcSPSinit(store);
+    let res = CalcSPSinit(store);
     
-    var obj = {
+    let obj = {
       pSPS:0, // Global additive bonus to SPS (applied after store)
       mSPS:0, // Global multiplier to SPS (applied after store)
       pSPC:0, // Additive bonus to SPC
@@ -920,17 +1143,17 @@ var ponyclicker = (function(){
       pStore:new Array(res.length), // Array of additive bonuses to individual store item SPS
       mStore:new Array(res.length) // array of multiplicative bonuses to individual store item SPS
     };
-    for(var i = 0; i < res.length; ++i) { obj.pStore[i]=0; obj.mStore[i]=0; } // initialize values
+    for(let i = 0; i < res.length; ++i) { obj.pStore[i]=0; obj.mStore[i]=0; } // initialize values
     
-    for(var i = 0; i < upgrades.length; ++i) {
+    for(let i = 0; i < upgrades.length; ++i) {
       obj = upgradeList[upgrades[i]].fn(obj, store);
       if(!obj || obj.pSPS === undefined) {
         alert("ILLEGAL UPGRADE: " + upgrades[i]);
       }
     }
 
-    var SPS = 0;
-    for(var i = 0; i < res.length; ++i) { // Calculate individual store object SPS and create base SPS amount
+    let SPS = 0;
+    for(let i = 0; i < res.length; ++i) { // Calculate individual store object SPS and create base SPS amount
       res[i] = (res[i]+obj.pStore[i])*(obj.mStore[i]+1.0);
       if(docache) { Store[i].SPS_cache = res[i]; }
       SPS += res[i]*store[i];
@@ -944,19 +1167,19 @@ var ponyclicker = (function(){
     return SPS;
   }
   function CalcSPSinit(store) {
-    var result = [];
-    for(var i = 0; i < Store.length; ++i) {
+    let result = [];
+    for(let i = 0; i < Store.length; ++i) {
       result.push(Store[i].fn_SPS(store));
     }
     return result;
   }
 
   function Buy(id) {
-    var n = Game.shiftDown ? 10 : 1,
+    let n = Game.shiftDown ? 10 : 1,
         numPurchase = 0,
         totalCost = 0;
-    for(var i = 0; i < n; ++i) {
-      var cost = Math.floor(Store[id].cost(Game.store[id]));
+    for(let i = 0; i < n; ++i) {
+      let cost = Math.floor(Store[id].cost(Game.store[id]));
       if(Game.smiles >= cost && (id != 1 || !NeedsMorePonies())) {
         numPurchase++;
         totalCost+=cost;
@@ -976,13 +1199,13 @@ var ponyclicker = (function(){
   function Sell(id) {
     if(!id) return; // you can't sell ponies you heartless monster
 
-    var n = Game.shiftDown ? 10 : 1,
+    let n = Game.shiftDown ? 10 : 1,
         numSell = 0,
         totalCost = 0;
-    for(var i = 0; i < n; ++i) {
+    for(let i = 0; i < n; ++i) {
       if(Game.store[id]>0) {
         Game.store[id] -= 1;
-        var cost = 0.5 * Store[id].cost(Game.store[id]);
+        let cost = 0.5 * Store[id].cost(Game.store[id]);
         Earn(cost);
         numSell++;
         totalCost+=cost;
@@ -999,7 +1222,7 @@ var ponyclicker = (function(){
     $stat_buildings.html(CountBuildings(Game.store).toFixed(0));
   }
   function BuyUpgrade(id) {
-    var x = upgradeList[id];
+    let x = upgradeList[id];
     if(Game.smiles >= Math.floor(x.cost)) {
       Earn(-1 * Math.floor(x.cost));
       Game.upgrades.push(id);
@@ -1013,23 +1236,23 @@ var ponyclicker = (function(){
     CheckAchievements(achievements_shop);
     CheckApocalypse();
   }
-  var MAX_PINKIES = 50;
+  let MAX_PINKIES = 50;
   
   function CheckApocalypse() {
     if(Game.upgradeHash['89'] !== undefined && apocalypseTime == -1) {
       apocalypseTime = new Date().getTime();
-      $('#apocalypse')[0].style.opacity = 1;
-      $('#mandatory-fun')[0].href = 'https://www.youtube.com/watch?v=19G0I7xHQBM';
+      $('#apocalypse')[0].style.opacity = '1';
+      (<HTMLAnchorElement>$('#mandatory-fun')[0]).href = 'https://www.youtube.com/watch?v=19G0I7xHQBM';
       $('#mandatory-fun').html('The end is nigh.');
       pinkie_freelist = [];
       if(Game.pinkies.length == 0) {
         Game.pinkies = [];
-        for(var i = 0; i < MAX_PINKIES; ++i) {
+        for(let i = 0; i < MAX_PINKIES; ++i) {
           Game.pinkies.push(-1);
           pinkie_freelist.push(i);
         }
       } else {
-        for(var i = 0; i < Game.pinkies.length; ++i) {
+        for(let i = 0; i < Game.pinkies.length; ++i) {
           if(Game.pinkies[i]>=0) SpawnPinkie(i);
           else pinkie_freelist.push(i);
         }
@@ -1039,18 +1262,18 @@ var ponyclicker = (function(){
   }
   function ResetApocalypse() {
     apocalypseTime = -1;
-    $('#apocalypse')[0].style.opacity = 0;
-    $('#mandatory-fun')[0].href = 'https://www.youtube.com/watch?v=otAFRGL4yX4';
+    $('#apocalypse')[0].style.opacity = '0';
+    (<HTMLAnchorElement>$('#mandatory-fun')[0]).href = 'https://www.youtube.com/watch?v=otAFRGL4yX4';
     $('#mandatory-fun').html('The smile song is mandatory while playing this.');
   }
   
-  function SpawnPinkie(id) {
+  function SpawnPinkie(id?:number) {
     if(id == null) {
       if(pinkie_freelist.length == 0) return;
       id = pinkie_freelist.pop();
       Game.pinkies[id] = 0;
     }
-    var w = pbg.offsetWidth, h = pb.offsetHeight;
+    let w = pbg.offsetWidth, h = pb.offsetHeight;
     $pinkieclones.append($(document.createElement('div'))
       .css('left', GetRandNum(0, w - 53*2))
       .css('top', GetRandNum(0, h - 64*2))
@@ -1070,14 +1293,14 @@ var ponyclicker = (function(){
     Game.pinkies[id] = -1;
     pinkie_freelist.push(id);
     $statclonespopped[0].style.display = 'block';
-    $stat_clonespopped.html(Game.clonespopped);
+    $stat_clonespopped.html(Game.clonespopped.toString());
     UpdateSPS();
   }
   //
   // -------------------------------- Update HTML functions --------------------------------
   //
   function dynFontSize(str) {
-    var size=80;
+    let size=80;
     if(str.length < 21) {
       size=100;
     } else if(str.length < 31) {
@@ -1088,8 +1311,8 @@ var ponyclicker = (function(){
   function updateUpgradesAchievements() {
     $achievements_owned.html(Game.achievementcount.toFixed(0));
     $upgrades_owned.html(Game.upgrades.length.toFixed(0));
-    var makeAchievement = function(iterator, prop, upgrade){
-        var $ach = $(document.createElement('div')).addClass('achievement').css('background-image','url('+(!upgrade?'achievements':'upgrades')+'.png)');
+    let makeAchievement = function(iterator:number, prop:string, upgrade?:boolean){
+        let $ach = $(document.createElement('div')).addClass('achievement').css('background-image','url('+(!upgrade?'achievements':'upgrades')+'.png)');
         $(document.createElement('div'))
           .addClass('menutooltip').css('left',-2-((iterator%5)*54))
           .html(
@@ -1105,8 +1328,8 @@ var ponyclicker = (function(){
     };
 
     $achievements.empty();
-    var count = 0;
-    for (var prop in achievementList) {
+    let count = 0;
+    for (let prop in achievementList) {
         if(achievementList.hasOwnProperty(prop)){
           $achievements.append(makeAchievement(count, prop));
           count++;
@@ -1114,7 +1337,7 @@ var ponyclicker = (function(){
     }
 
     $upgradelist.empty();
-    for(var i = 0; i < Game.upgrades.length; i++) // TODO: Make unique upgrade images
+    for(let i = 0; i < Game.upgrades.length; i++) // TODO: Make unique upgrade images
       $upgradelist.append(makeAchievement(i, Game.upgrades[i], true));
 
     UpdateMuffins();
@@ -1128,28 +1351,28 @@ var ponyclicker = (function(){
     if (a === b) return true;
     if (a == null || b == null) return false;
     if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; ++i) {
+    for (let i = 0; i < a.length; ++i) {
       if (a[i] !== b[i]) return false;
     }
     return true;
   }
   
-  var lastUpgrade = [];
-  var scopeUpgradeList = []; // These arrays are declared up here and re-used because chrome's garbage collector WILL NOT FUCKING CLEAN UP OLD ARRAYS. EVER. So we have to re-use them instead.
-  var updatestore_nstore = [];
-  for(var i = 0; i < Store.length; ++i) { updatestore_nstore.push(0); }
+  let lastUpgrade = [];
+  let scopeUpgradeList = []; // These arrays are declared up here and re-used because chrome's garbage collector WILL NOT FUCKING CLEAN UP OLD ARRAYS. EVER. So we have to re-use them instead.
+  let updatestore_nstore = [];
+  for(let i = 0; i < Store.length; ++i) { updatestore_nstore.push(0); }
   
   function UpdateStore() {
-    var minPayPerSmile = Number.MAX_VALUE,
+    let minPayPerSmile = Number.MAX_VALUE,
         minItem = -1;
     
     if(Game.settings.showHighlight) {
       // Find the most efficient building
-      for(var i = 0; i < Store.length; ++i) {
-        for(var j = 0; j < Store.length; ++j) updatestore_nstore[j] = 0+Game.store[j];
+      for(let i = 0; i < Store.length; ++i) {
+        for(let j = 0; j < Store.length; ++j) updatestore_nstore[j] = 0+Game.store[j];
         
         updatestore_nstore[i]+=1;
-        var nSPS = CalcSPS(updatestore_nstore, Game.upgrades, Game.cupcakes, false),
+        let nSPS = CalcSPS(updatestore_nstore, Game.upgrades, Game.cupcakes, false),
             payPerSmile = Store[i].cost(Game.store[i])/(nSPS - Game.SPS);
         
         if(payPerSmile < minPayPerSmile) {
@@ -1160,8 +1383,8 @@ var ponyclicker = (function(){
     }
     
     $ponycost.html("(NEEDS " + Math.ceil(inv_triangular(Game.store[1]+1)) + " PONIES)").hide();
-    for(var i = 0; i < Store.length; ++i) {
-      var item = Store[i],
+    for(let i = 0; i < Store.length; ++i) {
+      let item = Store[i],
           count = Game.store[i],
           cost = item.cost(count),
           $buyN = $("#buy" + i);
@@ -1175,18 +1398,18 @@ var ponyclicker = (function(){
       else $buyN[0].style.cssText = 'color:#fff;';
       
       $("#cost" + i).html(PrettyNum(cost));
-      $("#count" + i).html(count);
-      var elem = $("#icon" + i)[0];
-      var nimg = "url('"+Store[i].img(Game.store[i])+"')";
+      $("#count" + i).html(count.toString());
+      let elem = $("#icon" + i)[0];
+      let nimg = "url('"+Store[i].img(Game.store[i])+"')";
       if(nimg != elem.style.backgroundImage) elem.style.backgroundImage = nimg; // helps alleviate memory leaks
     }
     
     curUpgradeList.length = 0; // We don't do = [] here because this may be referenced elsewhere
     scopeUpgradeList.length = 0; // we mark whether or not something is disabled by negating it's ID, but we can't put negatives in curUpgradeList.
 
-    for(var i in upgradeList) {
+    for(let i in upgradeList) {
       if(upgradeList[i].cond() && Game.upgradeHash[i] == null) {
-        var hide = upgradeList[i].cost>Game.smiles;
+        let hide = upgradeList[i].cost>Game.smiles;
         curUpgradeList.push(i);
         scopeUpgradeList.push(hide?-i:i);
       }
@@ -1194,10 +1417,10 @@ var ponyclicker = (function(){
     
     curUpgradeList.sort(function(a, b){return upgradeList[a].cost-upgradeList[b].cost}); 
     if(!arraysEqual(lastUpgrade,scopeUpgradeList)) {
-      var achs = [];
-      for(var i = 0; i < curUpgradeList.length; ++i) {
-          var hide = upgradeList[curUpgradeList[i]].cost>Game.smiles;
-        var $ach = $(document.createElement('div'))
+      let achs = [];
+      for(let i = 0; i < curUpgradeList.length; ++i) {
+          let hide = upgradeList[curUpgradeList[i]].cost>Game.smiles;
+        let $ach = $(document.createElement('div'))
           .addClass('achievement'+(hide?' hidden':''))
           .css('background-image','url(upgrades.png)');
   
@@ -1206,7 +1429,7 @@ var ponyclicker = (function(){
         achs.push($ach);
       }
       $storeupgrades.empty().append(achs);
-      var save = lastUpgrade; // save the lastUpgrade list
+      let save = lastUpgrade; // save the lastUpgrade list
       lastUpgrade = scopeUpgradeList;
       scopeUpgradeList = save; // set the scope list to the old last upgrade reference      
     }
@@ -1216,9 +1439,9 @@ var ponyclicker = (function(){
     Game.SPS = CalcSPS(Game.store, Game.upgrades, Game.cupcakes, true);
     $stat_SPC.html(PrettyNum(Math.floor(Game.SPC)));
     if(Game.SPS > 0) {
-      var wither = (apocalypseTime < 0)?0:(1-Math.pow(1-PINKIE_WITHER, Game.pinkies.length - pinkie_freelist.length));
+      let wither = (apocalypseTime < 0)?0:(1-Math.pow(1-PINKIE_WITHER, Game.pinkies.length - pinkie_freelist.length));
       if(wither > 0) {
-        var nsps = (1-wither)*Game.SPS;
+        let nsps = (1-wither)*Game.SPS;
         $SPS.html("+" + ((nsps<=999)?nsps.toFixed(1):PrettyNum(nsps)) + ' per second <span style="color:#900">(-'+(wither*100).toFixed(1)+'% lost)</span>').show();
       } else {
         $SPS.html("+" + ((Game.SPS<=999)?Game.SPS.toFixed(1):PrettyNum(Game.SPS)) + " per second").show();
@@ -1232,13 +1455,13 @@ var ponyclicker = (function(){
     $stat_muffins.html(PrettyNum(Game.muffins));
   }
   function displayTime(milliseconds) {
-    var seconds = Math.floor(milliseconds/1000)%60,
+    let seconds = Math.floor(milliseconds/1000)%60,
         minutes = Math.floor(milliseconds/60000)%60,
         pad = function(n){return n<10?'0'+n:n};
     return Math.floor(milliseconds/3600000).toFixed(0) + ':' + pad(minutes.toFixed(0)) + ':' + pad(seconds.toFixed(0));
   }
   function drawImage($img, x, y, r) {
-    var img = $img[0],
+    let img = $img[0],
         w = $img.width(),
         h = $img.height();
     if($img.doneLoading) {
@@ -1256,7 +1479,7 @@ var ponyclicker = (function(){
   
   // This function is used for non-graphical updates.
   function GameTick() {
-    var timestamp = Date.now();
+    let timestamp = Date.now();
     if(!startTime) {
       startTime =
       lastNews =
@@ -1266,12 +1489,12 @@ var ponyclicker = (function(){
     }
     Game.delta = timestamp - lastTime;
 
-    var hasFocus = !Game.settings.optimizeFocus || document.hasFocus(),
+    let hasFocus = !Game.settings.optimizeFocus || document.hasFocus(),
         framelength = (hasFocus?33:500); // 33 is 30 FPS
     if(Game.delta>framelength) { // play at 30 FPS or the text starts flickering
       ProcessSPS(Game.delta);
       lastTime = timestamp;
-      //var $overlaytime = $('#overlaytime'); // Can't cache this because it's destroyed often
+      //let $overlaytime = $('#overlaytime'); // Can't cache this because it's destroyed often
       //if($overlaytime.length) $overlaytime.html(CalcTimeItem($overlaytime.attr('data-item')));
     }
     
@@ -1298,9 +1521,9 @@ var ponyclicker = (function(){
   }
   
    // Ticks are used for things like updating the total playtime
-  var lastTime, startTime, lastTick, lastSave, lastSpin, apocalypseTime=-1;
+  let lastTime, startTime, lastTick, lastSave, lastSpin, apocalypseTime=-1;
   function UpdateGame(timestamp) {
-    var hasFocus = !Game.settings.optimizeFocus || document.hasFocus(),
+    let hasFocus = !Game.settings.optimizeFocus || document.hasFocus(),
         framelength = (hasFocus?33:500); // 33 is 30 FPS
     
     if(Math.abs(vangle)>0.0005) curangle += vangle*0.9;
@@ -1311,13 +1534,13 @@ var ponyclicker = (function(){
     }
     
     if(Game.settings.useCanvas && (hasFocus || Game.delta>framelength)) {
-      var grd = ctx.createLinearGradient(0,0,0,canvas.height);
+      let grd = ctx.createLinearGradient(0,0,0,canvas.height);
       grd.addColorStop(0,"#d8f6ff");
       grd.addColorStop(1,"#1288e2");
       ctx.fillStyle = grd;
 
       if(apocalypseTime>0) {
-        var alpha = (new Date().getTime() - apocalypseTime)/10000;
+        let alpha = (new Date().getTime() - apocalypseTime)/10000;
         ctx.save();
         
         if(alpha < 1.0) {
@@ -1337,7 +1560,7 @@ var ponyclicker = (function(){
       
       ctx.save();
 
-      var calc = function(k, $el){
+      let calc = function(k, $el){
         return canvas[k]/(k === 'width'?2:1) - $el[k]()/2;
       };
       drawImage($img_rays, calc('width',$img_rays), calc('height',$img_rays), ((timestamp - startTime)/3000)%(2*Math.PI));
@@ -1347,17 +1570,17 @@ var ponyclicker = (function(){
   }
       
   function CalcTimeItem(item) {
-    var time = Math.ceil((Store[item].cost(Game.store[item]) - Game.smiles) / Game.SPS);
+    let time = Math.ceil((Store[item].cost(Game.store[item]) - Game.smiles) / Game.SPS);
     return (time <= 0)?'<b>now</b>':('in <b>' + PrintTime(time)+'</b>');
   }
   
-  var updateoverlay_nstore = []; // Because chrome doesn't know how to clean up after itself
-  for(var i = 0; i < Store.length; ++i) { updateoverlay_nstore.push(0); }
-  function UpdateOverlay(item, y, mobile) {
-    var skip = false;
+  let updateoverlay_nstore = []; // Because chrome doesn't know how to clean up after itself
+  for(let i = 0; i < Store.length; ++i) { updateoverlay_nstore.push(0); }
+  function UpdateOverlay(item:number, y:number, mobile?) {
+    let skip = false;
     if(item == null)
-      item = $overlay.attr('data-item');
-    else if(item == $overlay.attr('data-item'))
+      item = parseInt($overlay.attr('data-item'),10);
+    else if(item == parseInt($overlay.attr('data-item'),10))
       skip = true;
       
     if(!skip)
@@ -1366,7 +1589,7 @@ var ponyclicker = (function(){
   
       if(item < 0) return $overlay.hide();
   
-      var x = Store[item],
+      let x = Store[item],
           xcount = Game.store[item],
           xcost = x.cost(xcount),
           $title = $(document.createElement('div'))
@@ -1375,16 +1598,16 @@ var ponyclicker = (function(){
   
       if(xcount > 0) $title.append('<div>['+PrettyNum(xcount)+' owned]</div>');
       $overlay.empty().append($title, '<hr><p>'+x.desc+'</p>');//<ul>
-      var $ul = $(document.createElement('ul'));
+      let $ul = $(document.createElement('ul'));
   
       if(x.formula) $ul.append('<li class="formula">'+x.formula+'</li>');
       if(x.SPS_cache > 0 || item==1) $ul.append('<li>Each '+x.name.toLowerCase()+' generates <b>'+Pluralize(x.SPS_cache, ' smile')+'</b> per second</li>');
       if(xcount > 0 && x.SPS_cache > 0) $ul.append('<li><b>'+PrettyNum(xcount)+'</b> '+x.plural.toLowerCase()+' generating <b>'+Pluralize(xcount*x.SPS_cache, ' smile')+'</b> per second</li>');
-      var lowerbound = Game.SPS/140737488355328; // this is Game.SPS / 2^47, which gives us about 5 bits of meaningful precision before the double falls apart.
-      for(var i = 0; i < Store.length; ++i) { updateoverlay_nstore[i] = 0+Game.store[i]; } //ensure javascript isn't passing references around for some insane reason
+      let lowerbound = Game.SPS/140737488355328; // this is Game.SPS / 2^47, which gives us about 5 bits of meaningful precision before the double falls apart.
+      for(let i = 0; i < Store.length; ++i) { updateoverlay_nstore[i] = 0+Game.store[i]; } //ensure javascript isn't passing references around for some insane reason
 
       updateoverlay_nstore[item]+=1;
-      var nSPS = CalcSPS(updateoverlay_nstore, Game.upgrades, Game.cupcakes, false),
+      let nSPS = CalcSPS(updateoverlay_nstore, Game.upgrades, Game.cupcakes, false),
           sps_increase = nSPS - Game.SPS,
           payPerSmile = xcost/(nSPS - Game.SPS),
           increaseText = sps_increase > 0 ? 'will increase your SPS by <b>'+(sps_increase > lowerbound ? PrettyNum(sps_increase) : 'almost nothing')+'</b>' : "<b>won't</b> increase your SPS",
@@ -1394,7 +1617,7 @@ var ponyclicker = (function(){
       if(xcost>Game.smiles && Game.SPS > 0) $ul.append('<li>This can be purchased <span id="overlaytime" data-item="'+item+'">' + CalcTimeItem(item) + '</span></li>');
       
       // Display buy/sell information
-      var helpStr = '<li><kbd>Shift + Click</kbd> to buy 10';
+      let helpStr = '<li><kbd>Shift + Click</kbd> to buy 10';
       if (xcount > 0 && item>0) helpStr += ', <kbd>Right click</kbd> to sell 1'; // you can't sell ponies
       $ul.append(helpStr+'</li>');
       
@@ -1405,7 +1628,7 @@ var ponyclicker = (function(){
       $overlay.css('top',function(){ return Math.min(Math.max(y-(mobile?(16+this.offsetHeight):40),0),window.innerHeight-this.offsetHeight); });
   }
   function UpdateUpgradeOverlay(item, x, y) {
-    var skip = false;
+    let skip = false;
     if(item != null && item >= curUpgradeList.length) item = -1;
 
     if(y != null && item >= 0) {
@@ -1423,7 +1646,7 @@ var ponyclicker = (function(){
       
       if(item < 0) return $upgradeoverlay.hide();
       
-      var u = upgradeList[curUpgradeList[item]];
+      let u = upgradeList[curUpgradeList[item]];
       $upgradeoverlay.empty().html('<div class="title"><p>'+u.name+'</p><span>'+smilethumb+PrettyNum(u.cost)+'</span></div><hr><p>'+u.desc+'</p>').show();
     }
     
@@ -1434,14 +1657,14 @@ var ponyclicker = (function(){
       });
     }
   }
-  var PINKIE_WITHER = 0.01;
+  let PINKIE_WITHER = 0.01;
   function ProcessSPS(delta) {
-    var SPS = Game.SPS*(delta/1000.0);
+    let SPS = Game.SPS*(delta/1000.0);
   
     if(apocalypseTime > 0) {
-      for(var i = 0; i < Game.pinkies.length; ++i) {
+      for(let i = 0; i < Game.pinkies.length; ++i) {
         if(Game.pinkies[i] >= 0) {
-          var absorb = SPS*PINKIE_WITHER;
+          let absorb = SPS*PINKIE_WITHER;
           Game.pinkies[i] += absorb*1.1;
           SPS -= absorb;
         } 
@@ -1454,7 +1677,7 @@ var ponyclicker = (function(){
      return Math.sqrt((x1-x2)*(x1-x2) + (y1-y2)*(y1-y2));
   }
   function GetEdgeLength(r, n) {
-    if(Game.settings.wheelDisplay == 0) {
+    if(Game.settings.wheelDisplay == displayWheel.entire) {
       if(n==1) return 350;
     } else {
       switch(n)
@@ -1465,27 +1688,27 @@ var ponyclicker = (function(){
         case 4: return 260;
       }
     }
-    var a = (2*Math.PI)/n;
-    var tx = Math.cos(a)*r - r;
-    var ty = Math.sin(a)*r;
+    let a = (2*Math.PI)/n;
+    let tx = Math.cos(a)*r - r;
+    let ty = Math.sin(a)*r;
     return Math.pow(ty*ty + tx*tx,0.5*0.95);
   }
   function OrganizePonies() {
-    var n = Game.store[0],
+    let n = Game.store[0],
         radd = n*30,
         r = 140+radd,
         a = (2*Math.PI)/ n,
         th = (n-2)*0.08;
         
-    if(Game.settings.wheelDisplay == 0) r = pb.offsetHeight*0.25;
+    if(Game.settings.wheelDisplay == displayWheel.entire) r = pb.offsetHeight*0.25;
     if(n==1) r = 0;
     
-    document.getElementById('ponyspin').style.top = (Game.settings.wheelDisplay == 0)?(-r*0.5)+'px':'120px';
-    var edge = GetEdgeLength(r, n);
+    document.getElementById('ponyspin').style.top = (Game.settings.wheelDisplay == displayWheel.entire)?(-r*0.5)+'px':'120px';
+    let edge = GetEdgeLength(r, n);
     
     $ponywrapper.empty();
-    for(var i = 0; i < n; ++i) {
-      var pone = ((i<Game.ponyList.length)?Game.ponyList[i]:0),
+    for(let i = 0; i < n; ++i) {
+      let pone = ((i<Game.ponyList.length)?Game.ponyList[i]:0),
           $ponyDiv = $(document.createElement('div'))
               .attr('id','pony'+i)
               .addClass('pony')
@@ -1498,12 +1721,12 @@ var ponyclicker = (function(){
 
       (function($el,index){ $el.on('click', function(){ Click(index) }) })($ponyDiv,i);
 
-      /*var $innerpony = $(document.createElement('div')).css({
+      /*let $innerpony = $(document.createElement('div')).css({
         transform: 'rotateZ('+(a*i + th + Math.PI/2)+'rad)',
         backgroundSize: edge+'px',
         backgroundImage: 'url("ponies/'+PonyList[pone]+'.svg")',
       });*/
-      var $innerpony = CacheSVG('ponies/'+PonyList[pone]+'.svg', edge, edge).css({
+      let $innerpony = CacheSVG('ponies/'+PonyList[pone]+'.svg', edge, edge).css({
         transform: 'rotateZ('+(a*i + th + Math.PI/2)+'rad)'
       });
       $ponyDiv.append($innerpony);
@@ -1536,14 +1759,14 @@ var ponyclicker = (function(){
     ctxlines.lineWidth=3;
     ctxlines.strokeStyle="#333";
     if(n>1) {
-      var f = Game.store[1], k = n- 1, j = 0;
-      for(var i = 0; i < f; i++) {
-          var p1 = j;
-          var p2 = j+k;
-          var x1 = Math.cos(a*p1 + th)*r + r;
-          var y1 = Math.sin(a*p1 + th)*r + r;
-          var x2 = Math.cos(a*p2 + th)*r + r;
-          var y2 = Math.sin(a*p2 + th)*r + r;
+      let f = Game.store[1], k = n- 1, j = 0;
+      for(let i = 0; i < f; i++) {
+          let p1 = j;
+          let p2 = j+k;
+          let x1 = Math.cos(a*p1 + th)*r + r;
+          let y1 = Math.sin(a*p1 + th)*r + r;
+          let x2 = Math.cos(a*p2 + th)*r + r;
+          let y2 = Math.sin(a*p2 + th)*r + r;
           ctxlines.moveTo(x1,y1);
           ctxlines.lineTo(x2,y2);
           j += 1;
@@ -1557,13 +1780,13 @@ var ponyclicker = (function(){
   // -------------------------------- Set document hooks --------------------------------
   //
 
-  var setShiftDown = function(event){
+  let setShiftDown = function(event){
       if(event.keyCode === 16 || event.charCode === 16 || event.keyCode === 17 || event.charCode === 17){
           Game.shiftDown = true;
       }
   };
 
-  var setShiftUp = function(event){
+  let setShiftUp = function(event){
       if(event.keyCode === 16 || event.charCode === 16 || event.keyCode === 17 || event.charCode === 17){
           Game.shiftDown = false;
       }
@@ -1582,8 +1805,8 @@ var ponyclicker = (function(){
         .on('webkitAnimationEnd animationend',aniEndFunc)
         .appendTo($mousetexts);
   }
-  function ShowNotice(title, desc, flavor) {
-    var $div = $(document.createElement('div'))
+  function ShowNotice(title:string, desc:string, flavor?:string) {
+    let $div = $(document.createElement('div'))
       .html('<strong>'+title+'</strong>'+(flavor!=null?'<i>['+flavor+']</i>':'') + (desc!=null?'<hr><p>'+desc+'</p>':''))
       .on('webkitAnimationEnd animationend click', aniEndFunc);
     $notices.prepend($div);
@@ -1599,7 +1822,7 @@ var ponyclicker = (function(){
   function CheckForUpdates() {
     $.ajax({
       url:'./version.json',
-      cache:'false', // jQuery bypasses cache by appending a timestamp to the request
+      cache:false, // jQuery bypasses cache by appending a timestamp to the request
       dataType:'json',
       beforeSend: function(xhr) { xhr.overrideMimeType( "application/json" ); }, // Firefox REQUIRES this, dataType is not sufficient. ¯\(°_o)/¯
       success: function(data,status,r) {
@@ -1610,16 +1833,15 @@ var ponyclicker = (function(){
     });
     window.setTimeout(CheckForUpdates, 60000); //check every minute
   }
-  
-  function CacheSVG(src, w, h)
+  function CacheSVG(src, w?, h?):JQueryCanvas
   {
-    var $img = $(new Image());
-    var cache_canvas = document.createElement('canvas');
+    let $img = $(new Image());
+    let cache_canvas = document.createElement('canvas');
     if(w) cache_canvas.width = w;
     if(h) cache_canvas.height = h;
-    var $cache_canvas = $(cache_canvas);
+    let $cache_canvas = <JQueryCanvas>$(cache_canvas);
     $img.on('load', function() { 
-      var cache_ctx = cache_canvas.getContext('2d');
+      let cache_ctx = cache_canvas.getContext('2d');
       cache_canvas.width = (!w?this.width:w);
       cache_canvas.height = (!h?this.height:h);
       cache_ctx.drawImage(this, 0, 0, cache_canvas.width, cache_canvas.height);
@@ -1628,8 +1850,8 @@ var ponyclicker = (function(){
     return $cache_canvas;
   }
   // You would not believe the horrific sequence of events that led to the creation of this function.
-  var setMouseMove = function(event){
-    var root = $('#buy0')[0],
+  let setMouseMove = function(event){
+    let root = $('#buy0')[0],
         wrapper = $('#storewrapper')[0],
         item = -1,
         actualTop = root.offsetTop-wrapper.scrollTop+wrapper.offsetTop,
@@ -1652,12 +1874,19 @@ var ponyclicker = (function(){
     curMouseY=event.clientY;
     EarnAchievement(1);
   };
-  
-  var public_members = {
-    Store:Store,
+  interface public_members{
+    Game?:CreateGame,
+    Store:StoreItem[],
     Upgrades:upgradeList, 
     Achievements:achievementList,
     CreateGame : CreateGame,
+    CalcSPS : (store, upgrades, cupcakes, docache)=>number
+  }
+  let public_members :public_members= {
+    Store:Store,
+    Upgrades:upgradeList, 
+    Achievements:achievementList,
+    CreateGame : new CreateGame(),
     CalcSPS : CalcSPS
   };
   
@@ -1668,7 +1897,7 @@ var ponyclicker = (function(){
   //
   // -------------------------------- Begin Game Initialization --------------------------------
   //
-  var $doc = $(document),
+  let $doc = $(document),
       $w = $(window),
       $loadscreen = $('#loadscreen'),
       $EnableE = $('#EnableEffects'),
@@ -1700,10 +1929,10 @@ var ponyclicker = (function(){
       $ponywrapper = $('#ponywrapper'),
       $achievements = $('#achievements'),
       smilethumb = '<img src="pinkiehappy.png" alt="Smiles: " title="Smiles" />',
-      canvas = document.getElementById('canvas'),
+      canvas = <HTMLCanvasElement>document.getElementById('canvas'),
       $canvas = $(canvas),
       ctx = canvas.getContext("2d"),
-      canvaslines = document.getElementById('canvaslines'),
+      canvaslines = <HTMLCanvasElement>document.getElementById('canvaslines'),
       $canvaslines = $(canvaslines),
       ctxlines = canvaslines.getContext("2d"),
       $img_rays = CacheSVG('rays.svg'), // the onload check is done for firefox, which gets overeager
@@ -1724,7 +1953,7 @@ var ponyclicker = (function(){
       $statclonespopped = $('#statclonespopped'),
       pb = $board[0];
       
-  var Game = CreateGame(),
+  let Game = new CreateGame(),
       curMouseX = 0,
       curMouseY = 0,
       pinkie_freelist = [];
@@ -1738,8 +1967,8 @@ var ponyclicker = (function(){
   
   // Generate store HTML
   $store.empty();
-  for(var i = 0; i < Store.length; ++i) {
-    var $item = $(document.createElement('li'))
+  for(let i = 0; i < Store.length; ++i) {
+    let $item = $(document.createElement('li'))
           .attr('id','buy'+i)
           .addClass('disable')
           .html(Store[i].name.toLowerCase() + '<br>')
@@ -1754,7 +1983,7 @@ var ponyclicker = (function(){
             smilethumb,
             $(document.createElement('span'))
               .attr('id','cost'+i)
-              .html(0)
+              .html('0')
           ),
         $countSpan = $(document.createElement('span'))
             .attr('id','count'+i)
@@ -1768,7 +1997,7 @@ var ponyclicker = (function(){
     $store.append($item);
   }
 
-  var $showmenu = $('#showmenu').on('click',function(){ ShowMenu(true) }),
+  let $showmenu = $('#showmenu').on('click',function(){ ShowMenu(true) }),
       $hidemenu = $('#hidemenu').on('click',function(){ ShowMenu(false) }),
       $exportWindow = $('#exportwindow'),
       $credits = $('#credits');
@@ -1795,7 +2024,7 @@ var ponyclicker = (function(){
     $exportWindow.show();
   });
   $('#importbtn').on('click',function(){
-    var x = window.prompt('Paste your exported game data here to import it. WARNING: This will overwrite your current game, even if the data is corrupt! Be sure you export your current game if you don\'t want to lose anything!');
+    let x = window.prompt('Paste your exported game data here to import it. WARNING: This will overwrite your current game, even if the data is corrupt! Be sure you export your current game if you don\'t want to lose anything!');
     if(x!==null) ImportGame(x);
   });
   $('#resetbtn').on('click',function(){
@@ -1814,30 +2043,30 @@ var ponyclicker = (function(){
     EarnAchievement(204);
   });
   
-  var curangle = -Math.PI/2; // this starts pinkie right side up.
-  var lastangle = 0;
-  var vangle = 0;
-  var vlastangle = 0;
-  var mleftdown = false;
+  let curangle = -Math.PI/2; // this starts pinkie right side up.
+  let lastangle = 0;
+  let vangle = 0;
+  let vlastangle = 0;
+  let mleftdown = false;
   $('#pagealert').on('click',function(){
     SaveGame(); Game.settings.closingWarn=false; location.reload(true);
   });
   
   function getAngle(event) {
-    var cx = $ponywrapper.offset().left;
-    var cy = $ponywrapper.offset().top;
+    let cx = $ponywrapper.offset().left;
+    let cy = $ponywrapper.offset().top;
     return Math.atan2(event.clientY-cy, event.clientX-cx);
   }
-  var fnmousedown = function(event) {
+  let fnmousedown = function(event) {
     mleftdown = true; 
     lastangle = getAngle(event)-curangle;
     vlastangle = vangle = 0;
   }
-  var fnmousemove = function(event) {
+  let fnmousemove = function(event) {
     vlastangle = getAngle(event)-(curangle+lastangle);
     curangle = (getAngle(event)-lastangle);
   }
-  var fnmouseup = function(event) {
+  let fnmouseup = function(event) {
     vangle = vlastangle;
     //CheckAchievements([207, 208]);
     CheckAchievements(['207']);
@@ -1847,11 +2076,11 @@ var ponyclicker = (function(){
   $('#ponyboard').on('mousedown', function(event){
     if(event.which===1) fnmousedown(event);
   }); 
-  $('#ponyboard').on('touchstart', function(event){ fnmousedown(event.originalEvent.targetTouches[0]); });
+  $('#ponyboard').on('touchstart', function(event){ fnmousedown((<TouchEvent>event.originalEvent).targetTouches[0]); });
   $('#ponyboard').on('mousemove', function(event){
     if(mleftdown) fnmousemove(event);
   });
-  $('#ponyboard').on('touchmove', function(event){ event.preventDefault(); fnmousemove(event.originalEvent.targetTouches[0]);});
+  $('#ponyboard').on('touchmove', function(event){ event.preventDefault(); fnmousemove((<TouchEvent>event.originalEvent).targetTouches[0]);});
   
   $w.on('resize',ResizeCanvas);
   $w.on('load',function(){ // doOnLoad equivalent
@@ -1866,7 +2095,7 @@ var ponyclicker = (function(){
     window.onbeforeunload = function (e) {
         if(!Game.settings.closingWarn) return null;
         e = e || window.event;
-        var text = "You are about to leave Pony Clicker!";
+        let text = "You are about to leave Pony Clicker!";
         if (e) e.returnValue = text;
         return text;
     };
